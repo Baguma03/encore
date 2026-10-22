@@ -1,5 +1,6 @@
 //! Dialog for choosing a clip range and formats to export, plus the range rules behind it.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use egui::epaint::{CornerRadius, Shadow};
@@ -10,6 +11,8 @@ use egui::{
 use mpd_display_rs::lyrics::{LyricLine, Lyrics, LyricsState};
 
 use super::{font_bold, font_light, with_alpha};
+use crate::art;
+use crate::config::Layout;
 use crate::export::{Aspect, ExportRequest, Style};
 use crate::player::SongInfo;
 
@@ -163,11 +166,12 @@ pub fn fmt_precise(d: Duration) -> String {
 pub enum PanelResult {
     Open,
     Close,
-    Export(ExportRequest),
+    Export(Box<ExportRequest>),
 }
 
 pub struct ExportPanel {
     song: SongInfo,
+    next: Option<SongInfo>,
     lyrics: LyricsState,
     selection: Option<Selection>,
     start: Duration,
@@ -176,23 +180,35 @@ pub struct ExportPanel {
     audio_found: bool,
     style: Style,
     motion: bool,
+    /// The live artist background setting of each layout, picked again with each style.
+    artist_bg_live: HashMap<Layout, bool>,
+    artist_bg: bool,
+    has_artist_image: bool,
     scroll_to: Option<usize>,
 }
 
 impl ExportPanel {
     /// Opens on the marked range if there is one, else on the active lyric line, else on a
-    /// stretch starting at `elapsed`, with `style` and `motion` picked.
+    /// stretch starting at `elapsed`, with `style` and `motion` picked and the artist
+    /// background as `artist_bg` has it for the style's layout.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         song: SongInfo,
+        next: Option<SongInfo>,
         lyrics: LyricsState,
         elapsed: Duration,
         marks: Marks,
         audio_found: bool,
         style: Style,
         motion: bool,
+        artist_bg: HashMap<Layout, bool>,
     ) -> Self {
         let mut panel = Self {
+            has_artist_image: art::has_artist_image(&song.artist),
+            artist_bg: artist_bg.get(&style.layout()).copied().unwrap_or(false),
+            artist_bg_live: artist_bg,
             song,
+            next,
             lyrics: LyricsState::Loading,
             selection: None,
             start: Duration::ZERO,
@@ -265,17 +281,16 @@ impl ExportPanel {
     fn request(&self, formats: &[Aspect]) -> ExportRequest {
         ExportRequest {
             song: self.song.clone(),
+            next: self.next.clone(),
             lyrics: self.lyrics.clone(),
             start: self.start,
             end: self.end,
-            formats: Aspect::ALL
-                .into_iter()
-                .filter(|a| formats.contains(a))
-                .collect(),
+            formats: self.style.formats(formats),
             with_audio: self.with_audio,
             fps: EXPORT_FPS,
             style: self.style,
             motion: self.motion,
+            artist_bg: self.artist_bg && self.has_artist_image,
         }
     }
 
@@ -332,8 +347,13 @@ impl ExportPanel {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             for aspect in Aspect::ALL {
-                let on = formats.contains(&aspect);
-                if chip(ui, aspect.display_name(), on).clicked() {
+                let enabled = self.style.supports(aspect);
+                let on = if self.style == Style::Spotify {
+                    enabled
+                } else {
+                    formats.contains(&aspect)
+                };
+                if chip(ui, aspect.display_name(), on, enabled).clicked() {
                     if on {
                         formats.retain(|&a| a != aspect);
                     } else {
@@ -345,12 +365,17 @@ impl ExportPanel {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             for style in Style::ALL {
-                if chip(ui, style.display_name(), self.style == style).clicked() {
+                if chip(ui, style.display_name(), self.style == style, true).clicked() {
                     self.style = style;
+                    self.artist_bg = self
+                        .artist_bg_live
+                        .get(&style.layout())
+                        .copied()
+                        .unwrap_or(false);
                 }
             }
             ui.add_space(16.0);
-            if switch(ui, &mut self.motion).clicked() {
+            if switch(ui, &mut self.motion, true).clicked() {
                 self.motion = !self.motion;
             }
             ui.label(
@@ -360,7 +385,24 @@ impl ExportPanel {
             );
         });
         ui.horizontal(|ui| {
-            if switch(ui, &mut self.with_audio).clicked() {
+            let mut on = self.artist_bg && self.has_artist_image;
+            if switch(ui, &mut on, self.has_artist_image).clicked() {
+                self.artist_bg = !self.artist_bg;
+            }
+            ui.label(
+                RichText::new("Artist background")
+                    .font(font_light(15.0))
+                    .color(with_alpha(
+                        Color32::WHITE,
+                        if self.has_artist_image { 1.0 } else { 0.5 },
+                    )),
+            );
+            if !self.has_artist_image {
+                ui.label(muted("no artist image", 13.0));
+            }
+        });
+        ui.horizontal(|ui| {
+            if switch(ui, &mut self.with_audio, true).clicked() {
                 self.with_audio = !self.with_audio;
             }
             ui.label(
@@ -373,7 +415,10 @@ impl ExportPanel {
             }
         });
 
-        let verdict = Verdict::of(self.start, self.end, formats.len());
+        if self.style == Style::Spotify {
+            ui.label(muted("Spotify style is 16:9 only", 13.0));
+        }
+        let verdict = Verdict::of(self.start, self.end, self.style.formats(formats).len());
         if let Some(msg) = verdict.message() {
             ui.label(
                 RichText::new(msg)
@@ -384,7 +429,7 @@ impl ExportPanel {
         ui.add_space(6.0);
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
             if pill(ui, "Export", true, verdict.can_export()).clicked() {
-                result = PanelResult::Export(self.request(formats));
+                result = PanelResult::Export(Box::new(self.request(formats)));
             }
             if pill(ui, "Cancel", false, true).clicked() {
                 result = PanelResult::Close;
@@ -564,19 +609,27 @@ fn nudge(ui: &mut Ui, text: &str) -> Response {
     response
 }
 
-/// Toggleable chip for a format or style, at least 64 points wide.
-fn chip(ui: &mut Ui, text: &str, on: bool) -> Response {
+/// Toggleable chip for a format or style, at least 64 points wide; dimmed and inert when not
+/// `enabled`.
+fn chip(ui: &mut Ui, text: &str, on: bool, enabled: bool) -> Response {
     let text_width = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font_bold(14.0), Color32::WHITE)
         .size()
         .x;
-    let (rect, response) = hit(ui, Vec2::new((text_width + 24.0).max(64.0), 32.0), true);
-    let painter = ui.painter();
+    let (rect, response) = hit(ui, Vec2::new((text_width + 24.0).max(64.0), 32.0), enabled);
+    let mut painter = ui.painter().clone();
+    if !enabled {
+        painter.multiply_opacity(0.35);
+    }
     if on {
         painter.rect_filled(rect, 16, with_alpha(Color32::WHITE, 0.92));
     } else {
-        let fill = if response.hovered() { 22 } else { 10 };
+        let fill = if enabled && response.hovered() {
+            22
+        } else {
+            10
+        };
         painter.rect_filled(rect, 16, Color32::from_white_alpha(fill));
         painter.rect_stroke(
             rect,
@@ -600,11 +653,15 @@ fn chip(ui: &mut Ui, text: &str, on: bool) -> Response {
     response
 }
 
-/// iOS-style on/off switch; the caller flips `on` when it is clicked.
-fn switch(ui: &mut Ui, on: &mut bool) -> Response {
-    let (rect, response) = hit(ui, Vec2::new(40.0, 24.0), true);
+/// iOS-style on/off switch; the caller flips `on` when it is clicked. Dimmed and inert when
+/// not `enabled`.
+fn switch(ui: &mut Ui, on: &mut bool, enabled: bool) -> Response {
+    let (rect, response) = hit(ui, Vec2::new(40.0, 24.0), enabled);
     let t = ui.ctx().animate_bool_with_time(response.id, *on, 0.15);
-    let painter = ui.painter();
+    let mut painter = ui.painter().clone();
+    if !enabled {
+        painter.multiply_opacity(0.35);
+    }
     let off = Color32::from_white_alpha(40);
     let lit = with_alpha(Color32::WHITE, 0.9);
     painter.rect_filled(rect, 12, off.lerp_to_gamma(lit, t));
@@ -782,6 +839,7 @@ mod snapshot {
 
     /// Renders the panel and toasts over the Apple layout to the PNG named by
     /// `EXPORT_PANEL_SNAPSHOT`, or `export-panel.png` in the temp folder.
+    /// `EXPORT_PANEL_STYLE=spotify` picks the Spotify style instead of Vibrant.
     #[test]
     #[ignore = "needs a GPU"]
     fn panel_snapshot() {
@@ -809,12 +867,17 @@ mod snapshot {
         let lyrics = LyricsState::Found(Arc::new(parse_lrc(&lrc)));
         let mut panel = ExportPanel::new(
             song.clone(),
+            None,
             lyrics.clone(),
             Duration::from_secs(30),
             Marks::default(),
             false,
-            Style::Vibrant,
+            match std::env::var("EXPORT_PANEL_STYLE").as_deref() {
+                Ok("spotify") => Style::Spotify,
+                _ => Style::Vibrant,
+            },
             true,
+            HashMap::new(),
         );
         panel.pick(6, false);
         let mut formats = vec![Aspect::Portrait, Aspect::Square];
@@ -843,7 +906,8 @@ mod snapshot {
                     let view = View {
                         player: &player,
                         art: ArtView::default(),
-                        watermark: None,
+                        next_cover: None,
+                        artist_bg: false,
                         show_clock: true,
                         lyrics_enabled: true,
                         lyrics: lyrics.clone(),

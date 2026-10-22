@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use egui::{Event, Key, ViewportCommand};
@@ -33,6 +33,7 @@ enum Action {
     Lyrics,
     Clock,
     Motion,
+    ArtistBackground,
     Previous,
     Next,
     OpenExport,
@@ -61,6 +62,7 @@ fn key_action(key: Key, panel_open: bool) -> Option<Action> {
         Key::Y => Action::Lyrics,
         Key::T => Action::Clock,
         Key::B => Action::Motion,
+        Key::A => Action::ArtistBackground,
         Key::ArrowLeft => Action::Previous,
         Key::ArrowRight => Action::Next,
         Key::E => Action::OpenExport,
@@ -82,6 +84,8 @@ pub struct App {
     lyrics_enabled: bool,
     show_clock: bool,
     motion: bool,
+    /// Whether each layout uses the artist image as its background, kept for the session.
+    artist_bg: HashMap<Layout, bool>,
     export_panel: Option<ExportPanel>,
     /// Formats ticked in the export panel, kept for the session.
     export_formats: Vec<Aspect>,
@@ -116,6 +120,10 @@ impl App {
             layout: config.layout,
             lyrics_enabled: config.lyrics_enabled,
             motion: config.motion,
+            artist_bg: [Layout::Spotify, Layout::Apple, Layout::Vibrant]
+                .into_iter()
+                .map(|l| (l, config.artist_bg(l)))
+                .collect(),
             config,
             player,
             art,
@@ -173,11 +181,15 @@ impl App {
             Action::Lyrics => self.lyrics_enabled = !self.lyrics_enabled,
             Action::Clock => self.show_clock = !self.show_clock,
             Action::Motion => self.motion = !self.motion,
+            Action::ArtistBackground => {
+                let on = self.artist_bg_for(self.layout);
+                self.artist_bg.insert(self.layout, !on);
+            }
             Action::Previous => self.player.send(Command::Previous),
             Action::Next => self.player.send(Command::Next),
             Action::OpenExport => {
                 if let Some(song) = &state.current {
-                    self.open_export_panel(song.clone(), state.elapsed());
+                    self.open_export_panel(song.clone(), state.next.clone(), state.elapsed());
                 }
             }
             Action::CloseExport => self.export_panel = None,
@@ -198,6 +210,10 @@ impl App {
         }
     }
 
+    fn artist_bg_for(&self, layout: Layout) -> bool {
+        self.artist_bg.get(&layout).copied().unwrap_or(false)
+    }
+
     /// The song's lyrics, looked up even when the lyrics column is turned off.
     fn song_lyrics(&self, song: &SongInfo) -> LyricsState {
         let key = song.lyrics_key();
@@ -205,7 +221,7 @@ impl App {
         self.lyrics.get(&key)
     }
 
-    fn open_export_panel(&mut self, song: SongInfo, elapsed: Duration) {
+    fn open_export_panel(&mut self, song: SongInfo, next: Option<SongInfo>, elapsed: Duration) {
         let lyrics = self.song_lyrics(&song);
         let audio_found = self
             .config
@@ -214,12 +230,14 @@ impl App {
             .is_some_and(|dir| dir.join(&song.file).is_file());
         self.export_panel = Some(ExportPanel::new(
             song,
+            next,
             lyrics,
             elapsed,
             self.marks,
             audio_found,
             Style::for_layout(self.layout),
             self.motion,
+            self.artist_bg.clone(),
         ));
     }
 
@@ -232,7 +250,7 @@ impl App {
         match panel.show(ctx, &mut self.export_formats) {
             PanelResult::Open => self.export_panel = Some(panel),
             PanelResult::Close => {}
-            PanelResult::Export(req) => self.export_queue.push_back(req),
+            PanelResult::Export(req) => self.export_queue.push_back(*req),
         }
     }
 
@@ -332,13 +350,14 @@ impl App {
                 previous: self.art.previous(),
                 fade: self.art.fade(),
             },
-            watermark: self.art.watermark(),
+            next_cover: self.art.next_cover(),
             show_clock: self.show_clock,
             lyrics_enabled: self.lyrics_enabled,
             lyrics,
             now: chrono::Local::now(),
             capture: false,
             motion: self.motion,
+            artist_bg: self.artist_bg_for(self.layout),
         }
     }
 
@@ -440,6 +459,9 @@ impl eframe::App for App {
         if let Some(song) = &state.current {
             self.art.request(song);
         }
+        if let Some(next) = &state.next {
+            self.art.request_next(next);
+        }
         self.art.poll(&ctx);
 
         let lyrics = self.update_lyrics(&state);
@@ -486,6 +508,7 @@ mod tests {
             Key::Y,
             Key::T,
             Key::B,
+            Key::A,
             Key::D,
             Key::C,
             Key::F,
@@ -504,6 +527,7 @@ mod tests {
         assert_eq!(key_action(Key::E, false), Some(Action::OpenExport));
         assert_eq!(key_action(Key::E, true), Some(Action::CloseExport));
         assert_eq!(key_action(Key::F11, true), Some(Action::Fullscreen));
-        assert_eq!(key_action(Key::A, false), None);
+        assert_eq!(key_action(Key::A, false), Some(Action::ArtistBackground));
+        assert_eq!(key_action(Key::Z, false), None);
     }
 }

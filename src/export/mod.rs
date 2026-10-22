@@ -65,36 +65,68 @@ impl Aspect {
     }
 }
 
-/// Look of an exported clip: the dark Apple layout or the colourful Vibrant one.
+/// Look of an exported clip: the dark Apple layout, the colourful Vibrant one, or the
+/// Spotify layout over the artist background.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Style {
     #[default]
     Dark,
     Vibrant,
+    Spotify,
 }
 
 impl Style {
-    pub const ALL: [Style; 2] = [Style::Dark, Style::Vibrant];
+    pub const ALL: [Style; 3] = [Style::Dark, Style::Vibrant, Style::Spotify];
 
     pub fn display_name(self) -> &'static str {
         match self {
             Style::Dark => "Dark",
             Style::Vibrant => "Vibrant",
+            Style::Spotify => "Spotify",
         }
     }
 
-    /// The style matching the live layout, falling back to dark.
+    /// The style matching the live layout.
     pub fn for_layout(layout: Layout) -> Self {
         match layout {
+            Layout::Apple => Style::Dark,
             Layout::Vibrant => Style::Vibrant,
-            Layout::Apple | Layout::Spotify => Style::Dark,
+            Layout::Spotify => Style::Spotify,
         }
+    }
+
+    /// The live layout this style renders.
+    pub fn layout(self) -> Layout {
+        match self {
+            Style::Dark => Layout::Apple,
+            Style::Vibrant => Layout::Vibrant,
+            Style::Spotify => Layout::Spotify,
+        }
+    }
+
+    /// Whether this style can render `aspect`; the Spotify layout is landscape only.
+    pub fn supports(self, aspect: Aspect) -> bool {
+        self != Style::Spotify || aspect == Aspect::Landscape
+    }
+
+    /// The formats to render for the `chosen` ones, in [`Aspect::ALL`] order. The Spotify
+    /// style always renders 16:9 alone.
+    pub fn formats(self, chosen: &[Aspect]) -> Vec<Aspect> {
+        if self == Style::Spotify {
+            return vec![Aspect::Landscape];
+        }
+        Aspect::ALL
+            .into_iter()
+            .filter(|a| chosen.contains(a))
+            .collect()
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct ExportRequest {
     pub song: SongInfo,
+    /// Song queued after `song`, for the Spotify style's Up next card.
+    pub next: Option<SongInfo>,
     pub lyrics: LyricsState,
     /// Clip range as song positions.
     pub start: Duration,
@@ -106,6 +138,8 @@ pub struct ExportRequest {
     pub style: Style,
     /// Animated backdrop.
     pub motion: bool,
+    /// Artist image as the background, when the artist has one.
+    pub artist_bg: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -590,6 +624,22 @@ mod tests {
     }
 
     #[test]
+    fn spotify_style_is_landscape_only() {
+        let chosen = [Aspect::Square, Aspect::Portrait];
+        assert_eq!(
+            Style::Dark.formats(&chosen),
+            [Aspect::Portrait, Aspect::Square]
+        );
+        assert_eq!(Style::Spotify.formats(&chosen), [Aspect::Landscape]);
+        assert_eq!(Style::Spotify.formats(&[]), [Aspect::Landscape]);
+        assert!(Style::Spotify.supports(Aspect::Landscape));
+        assert!(!Style::Spotify.supports(Aspect::Portrait));
+        assert!(Aspect::ALL.iter().all(|&a| Style::Vibrant.supports(a)));
+        assert_eq!(Style::for_layout(Layout::Spotify), Style::Spotify);
+        assert_eq!(Style::for_layout(Layout::Apple), Style::Dark);
+    }
+
+    #[test]
     fn aspect_sizes_and_labels() {
         assert_eq!(Aspect::Landscape.size(), (1920, 1080));
         assert_eq!(Aspect::Portrait.size(), (1080, 1920));
@@ -818,11 +868,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Exports 6 seconds of a library song in every format with a fixture LRC, then checks the
-    /// files with ffprobe and saves frames at 1s to 4s next to them.
-    /// Set `MPD_DISPLAY_TEST_SONG` to an MPD-relative file, `MPD_DISPLAY_EXPORT_DIR` to the
-    /// output folder, and optionally `MPD_DISPLAY_TEST_STYLE=vibrant` and
-    /// `MPD_DISPLAY_TEST_MOTION=off`; MPD is only queried for tags and art.
+    /// Exports 6 seconds of a library song with a fixture LRC, then checks the files with
+    /// ffprobe and saves frames every 0.5 s from 1 s to 4 s next to them.
+    /// Set `MPD_DISPLAY_TEST_SONG` to an MPD-relative file and `MPD_DISPLAY_EXPORT_DIR` to the
+    /// output folder. Optional: `MPD_DISPLAY_TEST_STYLE` (`dark`, `vibrant` or `spotify`),
+    /// `MPD_DISPLAY_TEST_MOTION=off`, `MPD_DISPLAY_TEST_START` (clip start in seconds, default
+    /// 60), `MPD_DISPLAY_TEST_FORMATS` (comma-separated labels such as `16x9,1x1`) and
+    /// `MPD_DISPLAY_TEST_NEXT` (the queued song for the Up next card) and
+    /// `MPD_DISPLAY_TEST_ARTIST_BG=on|off` (default on for the Spotify style only). MPD is only queried for
+    /// tags and art.
     #[test]
     #[ignore = "needs a GPU, ffmpeg, MPD and a song from the library"]
     fn export_of_library_song() {
@@ -831,60 +885,116 @@ mod tests {
             return;
         };
         let cfg = Config::from_env();
-        let tags = run(std::process::Command::new("mpc")
-            .args([
-                "--host",
-                &cfg.mpc_host(),
-                "--port",
-                &cfg.mpd_port.to_string(),
-            ])
-            .args(["-f", "[%artist%]::[%title%]::[%album%]", "ls", &file]));
-        let mut tags = tags.lines().next().unwrap_or_default().split("::");
-        let mut tag = || tags.next().unwrap_or_default().to_owned();
-        let song = SongInfo {
-            id: 1,
-            file: file.clone(),
-            artist: tag(),
-            title: tag(),
-            album: tag(),
-            duration: Some(Duration::from_secs(200)),
+        let lookup = |file: &str| {
+            let tags = run(std::process::Command::new("mpc")
+                .args([
+                    "--host",
+                    &cfg.mpc_host(),
+                    "--port",
+                    &cfg.mpd_port.to_string(),
+                ])
+                .args([
+                    "-f",
+                    "[%artist%]::[%title%]::[%album%]::[%time%]",
+                    "ls",
+                    file,
+                ]));
+            let mut tags = tags.lines().next().unwrap_or_default().split("::");
+            let mut tag = || tags.next().unwrap_or_default().to_owned();
+            let (artist, title, album) = (tag(), tag(), tag());
+            let duration = tag()
+                .split_once(':')
+                .and_then(|(m, s)| Some(m.parse::<u64>().ok()? * 60 + s.parse::<u64>().ok()?))
+                .unwrap_or(200);
+            SongInfo {
+                id: 1,
+                file: file.to_owned(),
+                artist,
+                title,
+                album,
+                duration: Some(Duration::from_secs(duration)),
+            }
         };
+        let song = lookup(&file);
+        let next = std::env::var("MPD_DISPLAY_TEST_NEXT")
+            .ok()
+            .filter(|f| !f.is_empty())
+            .map(|f| lookup(&f));
+        let start: u64 = std::env::var("MPD_DISPLAY_TEST_START")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(60);
 
-        let lrc = "[00:59.00]This is the line before the clip\n\
-                   [01:00.50]First line inside the clip\n\
-                   [01:02.00]A second line that is long enough to wrap onto another row in a narrow column\n\
-                   [01:03.50]Third\n\
-                   [01:05.00]\n\
-                   [01:06.50]Fifth line after an instrumental gap\n\
-                   [01:08.00]After the clip\n";
-        let lyrics = LyricsState::Found(Arc::new(mpd_display_rs::lyrics::lrc::parse_lrc(lrc)));
+        let lrc: String = [
+            (-1.0, "This is the line before the clip"),
+            (0.5, "First line inside the clip"),
+            (
+                2.0,
+                "A second line that is long enough to wrap onto another row in a narrow column",
+            ),
+            (3.5, "Third"),
+            (5.0, ""),
+            (6.5, "Fifth line after an instrumental gap"),
+            (8.0, "After the clip"),
+        ]
+        .iter()
+        .map(|&(at, text)| {
+            let ms = ((start as f64 + at) * 1000.0) as u64;
+            format!(
+                "[{:02}:{:02}.{:02}]{text}\n",
+                ms / 60_000,
+                ms / 1000 % 60,
+                ms % 1000 / 10
+            )
+        })
+        .collect();
+        let lyrics = LyricsState::Found(Arc::new(mpd_display_rs::lyrics::lrc::parse_lrc(&lrc)));
+        let style = match std::env::var("MPD_DISPLAY_TEST_STYLE").as_deref() {
+            Ok("vibrant") => Style::Vibrant,
+            Ok("spotify") => Style::Spotify,
+            _ => Style::Dark,
+        };
+        let formats: Vec<Aspect> = match std::env::var("MPD_DISPLAY_TEST_FORMATS") {
+            Ok(list) => Aspect::ALL
+                .into_iter()
+                .filter(|a| list.split(',').any(|l| l.trim() == a.label()))
+                .collect(),
+            Err(_) => Aspect::ALL.to_vec(),
+        };
+        let formats = style.formats(&formats);
         let req = ExportRequest {
             song,
+            next,
             lyrics,
-            start: Duration::from_secs(60),
-            end: Duration::from_secs(66),
-            formats: Aspect::ALL.to_vec(),
+            start: Duration::from_secs(start),
+            end: Duration::from_secs(start + 6),
+            formats: formats.clone(),
             with_audio: true,
             fps: 30,
-            style: match std::env::var("MPD_DISPLAY_TEST_STYLE").as_deref() {
-                Ok("vibrant") => Style::Vibrant,
-                _ => Style::Dark,
-            },
+            style,
             motion: std::env::var("MPD_DISPLAY_TEST_MOTION").as_deref() != Ok("off"),
+            artist_bg: match std::env::var("MPD_DISPLAY_TEST_ARTIST_BG").as_deref() {
+                Ok(v) => v != "off",
+                Err(_) => style == Style::Spotify,
+            },
         };
         let began = Instant::now();
         let job = spawn(&cfg, req, Box::new(|| {}));
         while !job.is_finished() {
             thread::sleep(Duration::from_millis(50));
         }
-        println!("exported 3 x 6s in {:.1}s", began.elapsed().as_secs_f64());
+        println!(
+            "exported {} x 6s in {:.1}s",
+            formats.len(),
+            began.elapsed().as_secs_f64()
+        );
         let ExportStatus::Done(paths, warning) = job.status() else {
             panic!("unexpected status {:?}", job.status());
         };
         assert_eq!(warning, None);
-        assert_eq!(paths.len(), 3);
+        assert_eq!(paths.len(), formats.len());
 
-        for (path, aspect) in paths.iter().zip(Aspect::ALL) {
+        for (path, &aspect) in paths.iter().zip(&formats) {
             let probe = run(std::process::Command::new("ffprobe")
                 .args([
                     "-v",
@@ -912,10 +1022,11 @@ mod tests {
                 .expect("duration");
             assert!((duration - 6.0).abs() < 0.2, "duration {duration}");
 
-            for at in [1, 2, 3, 4] {
+            for half in 2..=8 {
+                let at = f64::from(half) / 2.0;
                 let png = cfg
                     .export_dir
-                    .join(format!("frame-{}-{at}s.png", aspect.label()));
+                    .join(format!("frame-{}-{at:.1}s.png", aspect.label()));
                 run(std::process::Command::new("ffmpeg")
                     .args([
                         "-hide_banner",
@@ -946,6 +1057,7 @@ mod tests {
         });
         let req = ExportRequest {
             song: song("Artist", "Job", "missing.flac"),
+            next: None,
             lyrics: LyricsState::NotFound,
             start: Duration::from_secs(10),
             end: Duration::from_millis(10_500),
@@ -954,6 +1066,7 @@ mod tests {
             fps: 30,
             style: Style::Dark,
             motion: true,
+            artist_bg: false,
         };
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = Arc::clone(&calls);

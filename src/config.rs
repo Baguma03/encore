@@ -5,7 +5,7 @@ use log::warn;
 const DEFAULT_HOST: &str = "localhost";
 const DEFAULT_PORT: u16 = 6600;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Layout {
     Spotify,
     Apple,
@@ -23,6 +23,14 @@ impl Layout {
     }
 }
 
+impl Config {
+    /// Whether `layout` starts with the artist image as its background:
+    /// `MPD_DISPLAY_ARTIST_BG` when set, else only for the Spotify layout.
+    pub fn artist_bg(&self, layout: Layout) -> bool {
+        self.artist_bg.unwrap_or(layout == Layout::Spotify)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub mpd_host: String,
@@ -37,6 +45,8 @@ pub struct Config {
     pub lyrics_online: bool,
     /// Animated backdrop behind the Apple and Vibrant layouts.
     pub motion: bool,
+    /// `MPD_DISPLAY_ARTIST_BG` for every layout; see [`Config::artist_bg`].
+    pub artist_bg: Option<bool>,
 }
 
 impl Config {
@@ -136,6 +146,7 @@ impl Config {
             lyrics_enabled: get("MPD_DISPLAY_LYRICS").is_none_or(|v| !is_off(&v)),
             lyrics_online: get("MPD_DISPLAY_LYRICS_ONLINE").is_none_or(|v| !is_off(&v)),
             motion: get("MPD_DISPLAY_MOTION").is_none_or(|v| !is_off(&v)),
+            artist_bg: get("MPD_DISPLAY_ARTIST_BG").map(|v| !is_off(&v)),
         }
     }
 
@@ -275,6 +286,24 @@ mod tests {
         assert_eq!(cfg.layout, Layout::Apple);
         assert!(cfg.lyrics_enabled);
         assert!(!cfg.lyrics_online);
+    }
+
+    #[test]
+    fn artist_background_defaults_and_override() {
+        let cfg = parse(&[]);
+        assert_eq!(cfg.artist_bg, None);
+        assert!(cfg.artist_bg(Layout::Spotify));
+        assert!(!cfg.artist_bg(Layout::Apple));
+        assert!(!cfg.artist_bg(Layout::Vibrant));
+
+        let on = parse(&[("MPD_DISPLAY_ARTIST_BG", "on")]);
+        assert!([Layout::Spotify, Layout::Apple, Layout::Vibrant]
+            .iter()
+            .all(|&l| on.artist_bg(l)));
+        let off = parse(&[("MPD_DISPLAY_ARTIST_BG", "OFF")]);
+        assert!([Layout::Spotify, Layout::Apple, Layout::Vibrant]
+            .iter()
+            .all(|&l| !off.artist_bg(l)));
     }
 
     #[test]

@@ -13,8 +13,6 @@ This is a replacement for my old [mpd-display](https://github.com/allylikesu/mpd
 - Reconnects automatically if MPD goes away or restarts
 - Time-synced lyrics
 - Many more. The amount of sins that were committed in that old version still keep me up at night.
-### Regressions from python version
-- Too lazy to implement the background gradient based on album art colors if there is no background image found for the current artist, I think the default grey background looks fine.
 
 Only tested on Linux. Requires MPC (used to fetch album art). `ffmpeg` (with libx264 and aac) is optional and only needed for [exporting lyric clips](#exporting-lyric-clips).
 
@@ -23,8 +21,9 @@ Three layouts are available. `l` cycles through them at runtime (Apple → Vibra
 
 - **Apple Music-style** (default): a blurred album art backdrop, rounded album art with the title, "Artist — Album" and a progress bar below it, clickable previous/play-pause/next buttons, a seekable progress bar, and a time-synced lyrics column on the right. The active lyric line is highlighted, the column scrolls smoothly, and lines far from the active one fade out. An optional date/clock overlay can be toggled with `t`.
 - **Vibrant**: modelled on Apple Music's colourful lyrics view. The backdrop is bright: enlarged, heavily blurred copies of the album art with a faint gradient of its main colours over them, cross-fading between songs. Light covers stay light; a soft dark halo behind the text, and a mild wash on very light art, keep white text readable. Square album art sits on the left with the elapsed and remaining time, a thin seekable progress bar, and the title and "Artist — Album" centred beneath it, and the time-synced lyrics are on the right. There are no transport buttons; clicking anywhere toggles play/pause. Tall and square windows stack the art above the lyrics. The `t` clock overlay works here too.
-- **Moving backdrop**: in the Apple and Vibrant layouts, enlarged, heavily blurred copies of the album art slowly drift, turn and blend into each other, like Apple Music's animated artwork. It keeps moving while playback is paused. Toggle it with `b`, or start without it with `MPD_DISPLAY_MOTION=off`; with it off, the backdrop is still.
-- **Spotify-style**: modelled on the Spotify desktop client's fullscreen mode, with artist-specific background art (see [below](#obtaining-and-using-artist-background-images-from-spotify)) and an "Up Next" display when the current song hits 90% completion.
+- **Spotify-style**: modelled on the Spotify desktop client's fullscreen mode: the artist's background image (see [below](#obtaining-and-using-artist-background-images-from-spotify)), the album art with a large title and artist, and a progress bar along the bottom. Time-synced lyrics show as three centred lines above the art: the previous line dimmed, the active line bold and bright, and the next line dimmed below it. On each new line they scroll up smoothly, the outgoing line fading out at the top and the incoming one fading in at the bottom; long lines wrap. `• • •` stands for the time before the first line and for instrumental gaps. Unsynced lyrics advance through the song at an even pace. For the last 10% of a song, a glass "Up next" card slides into the top-right corner with the next song's cover, title and artist, and a thin bar counting down the rest of the current song. The `t` clock sits in the same corner while the card is hidden.
+- **Moving backdrop**: enlarged, blurred copies of the album art drift across the screen, turn, swell and blend into each other, like Apple Music's animated artwork. It keeps moving while playback is paused. Toggle it with `b`, or start without it with `MPD_DISPLAY_MOTION=off`; with it off, the backdrop is still.
+- **Backgrounds**: `a` toggles the artist background for the current layout. When it is on and `artists/` has an image for the song's artist, the layout uses that image: tinted dark in the Spotify and Apple layouts with a vignette in the Apple one, and lighter in the Vibrant layout, with a halo behind the text. With motion on, the image slowly pans and zooms. When it is off, or there is no image, each layout uses its own backdrop: blurred album art for Spotify (moving when motion is on, darkened to match), dark blurred art for Apple and the colourful art for Vibrant. The setting is kept per layout for the session; it starts on for Spotify and off for Apple and Vibrant, and `MPD_DISPLAY_ARTIST_BG` sets the starting value for all of them.
 
 ## Features
 - Toggleable fullscreen with the `f` or `F11` key
@@ -49,6 +48,7 @@ Three layouts are available. `l` cycles through them at runtime (Apple → Vibra
 | `y` | Toggle lyrics |
 | `t` | Toggle date/clock overlay |
 | `b` | Toggle the moving backdrop |
+| `a` | Toggle the artist background for the current layout |
 | `e` | Open/close the lyric clip export panel |
 | `[` / `]` | Mark the clip in-point / out-point at the current playback position |
 | `Esc` / `q` | Quit |
@@ -88,11 +88,12 @@ target/release/mpd-display-rs
 | `MPD_DISPLAY_EXPORT_DIR` | Output folder for exported clips. Defaults to `~/Videos/mpd-display`. |
 | `MPD_DISPLAY_LAYOUT` | `apple`, `vibrant` or `spotify`. Defaults to `apple`. |
 | `MPD_DISPLAY_LYRICS` | `on` or `off`. Defaults to `on`. |
-| `MPD_DISPLAY_MOTION` | `on` or `off`: the moving backdrop of the Apple and Vibrant layouts. Defaults to `on`. |
+| `MPD_DISPLAY_MOTION` | `on` or `off`: the moving backdrop. Defaults to `on`. |
+| `MPD_DISPLAY_ARTIST_BG` | `on` or `off`: the artist background in every layout. Defaults to on for the Spotify layout and off for the others. |
 | `MPD_DISPLAY_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable LRCLIB lookups. Enabled by default. |
 
 ## Exporting lyric clips
-Renders a share-ready MP4 of the Apple or Vibrant layout (lyrics, album art, title and progress bar) for a chosen part of the current song. Rendering happens offline in the background on the GPU, faster than real time, while the display keeps running. Requires `ffmpeg` with libx264 and aac.
+Renders a share-ready MP4 of the Apple, Vibrant or Spotify layout (lyrics, album art, title and progress bar) for a chosen part of the current song. Rendering happens offline in the background on the GPU, faster than real time, while the display keeps running. Requires `ffmpeg` with libx264 and aac.
 
 ### Formats
 | Format | Resolution |
@@ -101,10 +102,10 @@ Renders a share-ready MP4 of the Apple or Vibrant layout (lyrics, album art, tit
 | 9:16 (default) | 1080×1920 |
 | 1:1 | 1080×1080 |
 
-Pick one or several; each becomes its own file. Portrait and square have their own layouts, which are also used when the live window has that shape.
+Pick one or several; each becomes its own file. Portrait and square have their own layouts, which are also used when the live window has that shape. The Spotify style renders 16:9 only.
 
 ### Style
-The panel's **Dark** and **Vibrant** chips choose the look of the clip: the dark Apple layout over blurred art, or the colourful Vibrant layout. The panel starts on Vibrant while the Vibrant layout is shown, and on Dark otherwise. The **Motion** switch exports the moving backdrop, or a still one when off; it starts at the display's current setting.
+The panel's **Dark**, **Vibrant** and **Spotify** chips choose the look of the clip: the dark Apple layout over blurred art, the colourful Vibrant layout, or the Spotify layout with its three-line lyrics (and the Up next card when the clip reaches the last 10% of the song). The panel starts on the style of the layout on screen. The **Motion** switch exports the moving backdrop, or a still one when off; it starts at the display's current setting. The **Artist background** switch uses the artist image as the background; it starts at the live setting of the chosen style's layout and is disabled, with a "no artist image" note, when `artists/` has no image for the song's artist.
 
 ### Choosing the range
 Press `e` to open the export panel.

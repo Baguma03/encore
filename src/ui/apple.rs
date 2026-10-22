@@ -30,8 +30,12 @@ const PORTRAIT_ASPECT: f32 = 0.8;
 const MUTED: f32 = 0.6;
 /// Corner radius of the art as a fraction of its side.
 const ART_RADIUS: f32 = 0.03;
-/// Black wash over the full-brightness moving art.
-const MOTION_DARKENING: f32 = 0.52;
+
+/// Black wash over the full-brightness moving art: lighter on dark covers so the movement
+/// shows, heavier on light ones so white text stays readable.
+pub fn motion_darkening(brightness: f32) -> f32 {
+    (0.3 + 0.32 * brightness).clamp(0.4, 0.6)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Orientation {
@@ -164,12 +168,12 @@ impl Controls {
     }
 
     fn thickness(unit: f32) -> f32 {
-        (unit * 0.011).max(3.0)
+        (unit * 0.02).max(5.0)
     }
 
     /// Height from the top of the bar to the bottom of the largest button.
     fn height(painter: &Painter, unit: f32) -> f32 {
-        Self::thickness(unit) + unit * 0.165 + Self::time_height(painter, unit)
+        Self::thickness(unit) + unit * 0.175 + Self::time_height(painter, unit)
     }
 }
 
@@ -444,7 +448,7 @@ fn paint_controls(
     let (elapsed, seek) = seek_track(ui, painter, id, view, song, track);
     let mut command = seek;
 
-    y += thickness + u * 0.03;
+    y += thickness + u * 0.04;
     paint_times(
         painter,
         track,
@@ -583,9 +587,17 @@ fn paint_backdrop(
         .map_or(Color32::from_rgb(40, 40, 48), |a| a.dominant);
     painter.rect_filled(screen, 0.0, shade(dominant, 0.3));
 
-    if view.motion {
+    if backdrop::uses_artist_image(view) {
+        let pan = view.motion.then_some(time);
+        backdrop::paint_artist_image(painter, screen, &view.art, Color32::WHITE, pan);
+        let brightness = view.art.current.map_or(0.5, |a| a.artist_brightness);
+        let wash = lerp(0.45, 0.68, brightness);
+        painter.rect_filled(screen, 0.0, with_alpha(Color32::BLACK, wash));
+    } else if view.motion {
         backdrop::paint_motion(painter, screen, &view.art, time, 1.0);
-        painter.rect_filled(screen, 0.0, with_alpha(Color32::BLACK, MOTION_DARKENING));
+        let brightness = view.art.current.map_or(0.5, |a| a.brightness);
+        let wash = motion_darkening(brightness);
+        painter.rect_filled(screen, 0.0, with_alpha(Color32::BLACK, wash));
     } else {
         paint_still_art(painter, screen, view);
     }

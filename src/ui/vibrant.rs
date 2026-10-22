@@ -16,6 +16,8 @@ use crate::art;
 use crate::player::{Command, SongInfo};
 
 /// Corner radius of the art as a fraction of its side.
+/// Opacity of the dark halo behind text over the artist image.
+const ARTIST_SHADOW: f32 = 0.5;
 const ART_RADIUS: f32 = 0.015;
 /// Opacity of the "Artist — Album" line.
 const SUBTITLE_ALPHA: f32 = 0.78;
@@ -129,14 +131,14 @@ impl Info {
     }
 
     fn thickness(&self) -> f32 {
-        (self.unit * 0.009).max(2.5)
+        (self.unit * 0.017).max(4.5)
     }
 
     fn height(&self, painter: &Painter) -> f32 {
         self.time_height(painter)
-            + self.unit * 0.018
+            + self.unit * 0.026
             + self.thickness()
-            + self.unit * 0.045
+            + self.unit * 0.055
             + self.meta.height()
     }
 
@@ -359,7 +361,7 @@ fn paint_info(
 ) -> Option<Command> {
     let mut y = info.top;
     let times_top = y;
-    y += info.time_height(painter) + info.unit * 0.018;
+    y += info.time_height(painter) + info.unit * 0.026;
     let thickness = info.thickness();
     let track = Rect::from_min_size(Pos2::new(info.left, y), Vec2::new(info.width, thickness));
     let (elapsed, command) = apple::seek_track(ui, painter, id, view, song, track);
@@ -372,7 +374,7 @@ fn paint_info(
         info.time_font(),
         with_alpha(Color32::WHITE, 0.7),
     );
-    y += thickness + info.unit * 0.045;
+    y += thickness + info.unit * 0.055;
     let pos = Pos2::new(info.left + info.width / 2.0, y);
     let shadow = text_shadow(view);
     info.meta
@@ -421,8 +423,11 @@ pub fn darkening(brightness: f32) -> f32 {
     lerp(0.04, 0.2, smooth(brightness, 0.5, 0.9))
 }
 
-/// Opacity of the dark halo behind text, stronger on lighter backdrops.
+/// Opacity of the dark halo behind text, stronger on lighter backdrops and on photos.
 fn text_shadow(view: &View) -> f32 {
+    if backdrop::uses_artist_image(view) {
+        return ARTIST_SHADOW;
+    }
     lerp(0.18, 0.45, smooth(backdrop_brightness(view), 0.3, 0.8))
 }
 
@@ -473,6 +478,15 @@ fn paint_backdrop(painter: &Painter, screen: Rect, view: &View, time: f64) {
         let fade = if previous.is_some() { art.fade } else { 1.0 };
         paint_gradient(painter, screen, current, time, alpha * fade);
     };
+    if backdrop::uses_artist_image(view) {
+        let pan = view.motion.then_some(time);
+        backdrop::paint_artist_image(painter, screen, art, Color32::WHITE, pan);
+        // Lighter than the Apple layout's wash; the text halo does the rest.
+        let brightness = art.current.map_or(0.5, |a| a.artist_brightness);
+        let wash = lerp(0.2, 0.5, brightness);
+        painter.rect_filled(screen, 0.0, with_alpha(Color32::BLACK, wash));
+        return;
+    }
     if art.current.is_none() {
         palettes(1.0);
     } else {

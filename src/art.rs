@@ -14,18 +14,19 @@ use log::{debug, warn};
 use crate::config::Config;
 use crate::player::SongInfo;
 
-const WATERMARK_PATH: &str = "./assets/logo.png";
 const BACKUP_ART_PATH: &str = "./assets/art_backup";
 const ARTISTS_DIR: &str = "./artists";
 const ARTIST_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
 
 const COVER_MAX: u32 = 1024;
+/// Longer side of the next song's cover thumbnail.
+const THUMB_MAX: u32 = 192;
 const ARTIST_BG_MAX: u32 = 2560;
 const BACKDROP_SMALL: u32 = 64;
 const BACKDROP_LARGE: u32 = 256;
 const BACKDROP_BLUR_SIGMA: f32 = 7.0;
 const BACKDROP_BRIGHTNESS: f32 = 0.55;
-const MOTION_BLUR_SIGMA: f32 = 3.0;
+const MOTION_BLUR_SIGMA: f32 = 2.0;
 const MOTION_SATURATION: f32 = 1.45;
 const DOMINANT_SATURATION: f32 = 1.25;
 const PALETTE_SAMPLE: u32 = 32;
@@ -48,6 +49,8 @@ pub struct ArtTextures {
     /// Soft, full-brightness copy of the cover for the animated backdrop.
     pub motion: TextureHandle,
     pub artist_bg: Option<TextureHandle>,
+    /// Mean relative luminance of the artist image, `0.0..=1.0`; 0.5 without one.
+    pub artist_brightness: f32,
     pub dominant: Color32,
     /// Distinct vivid colours of the cover, most prominent first; never empty.
     pub palette: Vec<Color32>,
@@ -64,6 +67,8 @@ pub struct ArtImages {
     /// Blurred, slightly more saturated square crop of the cover at full brightness.
     pub motion: ColorImage,
     pub artist_bg: Option<ColorImage>,
+    /// Mean relative luminance of the artist image, `0.0..=1.0`; 0.5 without one.
+    pub artist_brightness: f32,
     pub dominant: Color32,
     /// Distinct vivid colours of the cover, most prominent first; never empty.
     pub palette: Vec<Color32>,
@@ -71,21 +76,33 @@ pub struct ArtImages {
     pub brightness: f32,
 }
 
-struct Request {
-    song_file: String,
-    artist: String,
+/// Small cover of the song queued after the current one.
+pub struct Thumb {
+    pub song_file: String,
+    pub texture: TextureHandle,
 }
 
-/// Loads album art and artist backgrounds on a worker thread; textures are created on the UI thread.
+enum Request {
+    Art { song_file: String, artist: String },
+    Thumb { song_file: String },
+}
+
+enum Loaded {
+    Art(String, ArtImages),
+    Thumb(String, ColorImage),
+}
+
+/// Loads album art, artist backgrounds and the next song's cover on a worker thread; textures
+/// are created on the UI thread.
 pub struct ArtLoader {
     tx: mpsc::Sender<Request>,
-    rx: mpsc::Receiver<(String, ArtImages)>,
+    rx: mpsc::Receiver<Loaded>,
     requested: RefCell<Option<String>>,
+    requested_thumb: RefCell<Option<String>>,
     current: Option<ArtTextures>,
     previous: Option<ArtTextures>,
     changed_at: Option<Instant>,
-    watermark_image: Option<ColorImage>,
-    watermark: Option<TextureHandle>,
+    thumb: Option<Thumb>,
 }
 
 impl ArtLoader {
@@ -97,17 +114,32 @@ impl ArtLoader {
         let spawned = thread::Builder::new()
             .name("art-loader".into())
             .spawn(move || {
-                while let Ok(mut req) = req_rx.recv() {
-                    // Only the most recent request matters after rapid skips.
-                    while let Ok(newer) = req_rx.try_recv() {
-                        req = newer;
+                while let Ok(req) = req_rx.recv() {
+                    // Only the most recent request of each kind matters after rapid skips.
+                    let (mut art, mut thumb) = (None, None);
+                    for req in std::iter::once(req).chain(req_rx.try_iter()) {
+                        match req {
+                            Request::Art { .. } => art = Some(req),
+                            Request::Thumb { .. } => thumb = Some(req),
+                        }
                     }
-                    let images = worker.load(&req.song_file, &req.artist);
-                    debug!("art ready for {}", req.song_file);
-                    if res_tx.send((req.song_file, images)).is_err() {
-                        return;
+                    for req in [art, thumb].into_iter().flatten() {
+                        let loaded = match req {
+                            Request::Art { song_file, artist } => {
+                                let images = worker.load(&song_file, &artist);
+                                debug!("art ready for {song_file}");
+                                Loaded::Art(song_file, images)
+                            }
+                            Request::Thumb { song_file } => {
+                                let image = worker.thumb(&song_file);
+                                Loaded::Thumb(song_file, image)
+                            }
+                        };
+                        if res_tx.send(loaded).is_err() {
+                            return;
+                        }
+                        on_ready();
                     }
-                    on_ready();
                 }
             });
         if let Err(e) = spawned {
@@ -118,11 +150,11 @@ impl ArtLoader {
             tx: req_tx,
             rx: res_rx,
             requested: RefCell::new(None),
+            requested_thumb: RefCell::new(None),
             current: None,
             previous: None,
             changed_at: None,
-            watermark_image: load_watermark(),
-            watermark: None,
+            thumb: None,
         }
     }
 
@@ -133,7 +165,7 @@ impl ArtLoader {
             return;
         }
         *requested = Some(song.file.clone());
-        let req = Request {
+        let req = Request::Art {
             song_file: song.file.clone(),
             artist: song.artist.clone(),
         };
@@ -142,21 +174,42 @@ impl ArtLoader {
         }
     }
 
+    /// Queues the cover thumbnail of the queued `song`, ignoring repeated requests for the
+    /// same file.
+    pub fn request_next(&self, song: &SongInfo) {
+        let mut requested = self.requested_thumb.borrow_mut();
+        if requested.as_deref() == Some(song.file.as_str()) {
+            return;
+        }
+        *requested = Some(song.file.clone());
+        let req = Request::Thumb {
+            song_file: song.file.clone(),
+        };
+        if self.tx.send(req).is_err() {
+            warn!("art loader thread is gone");
+        }
+    }
+
     /// Uploads finished images as textures. Returns true if the current art changed.
     pub fn poll(&mut self, ctx: &egui::Context) -> bool {
-        if let Some(img) = self.watermark_image.take() {
-            self.watermark = Some(ctx.load_texture("watermark", img, TextureOptions::LINEAR));
-        }
-
         let mut changed = false;
-        while let Ok((file, images)) = self.rx.try_recv() {
-            if self.requested.borrow().as_deref() != Some(file.as_str()) {
-                continue;
+        while let Ok(loaded) = self.rx.try_recv() {
+            match loaded {
+                Loaded::Art(file, images) => {
+                    if self.requested.borrow().as_deref() != Some(file.as_str()) {
+                        continue;
+                    }
+                    let textures = upload(ctx, &file, images);
+                    self.previous = self.current.replace(textures);
+                    self.changed_at = Some(Instant::now());
+                    changed = true;
+                }
+                Loaded::Thumb(file, image) => {
+                    if self.requested_thumb.borrow().as_deref() == Some(file.as_str()) {
+                        self.thumb = Some(upload_thumb(ctx, &file, image));
+                    }
+                }
             }
-            let textures = upload(ctx, &file, images);
-            self.previous = self.current.replace(textures);
-            self.changed_at = Some(Instant::now());
-            changed = true;
         }
         changed
     }
@@ -180,8 +233,9 @@ impl ArtLoader {
         }
     }
 
-    pub fn watermark(&self) -> Option<&TextureHandle> {
-        self.watermark.as_ref()
+    /// Cover thumbnail of the song last passed to [`Self::request_next`], once loaded.
+    pub fn next_cover(&self) -> Option<&Thumb> {
+        self.thumb.as_ref()
     }
 }
 
@@ -200,9 +254,18 @@ pub fn upload(ctx: &egui::Context, song_file: &str, images: ArtImages) -> ArtTex
             TextureOptions::LINEAR_MIRRORED_REPEAT,
         ),
         artist_bg: images.artist_bg.map(|img| load("artist", img)),
+        artist_brightness: images.artist_brightness,
         dominant: images.dominant,
         palette: images.palette,
         brightness: images.brightness,
+        song_file: song_file.to_owned(),
+    }
+}
+
+/// Uploads a cover thumbnail of `song_file`.
+pub fn upload_thumb(ctx: &egui::Context, song_file: &str, image: ColorImage) -> Thumb {
+    Thumb {
+        texture: ctx.load_texture(format!("thumb:{song_file}"), image, TextureOptions::LINEAR),
         song_file: song_file.to_owned(),
     }
 }
@@ -212,9 +275,9 @@ pub fn load_art_images(cfg: &Config, song: &SongInfo) -> ArtImages {
     Worker::new(cfg).load(&song.file, &song.artist)
 }
 
-/// Decodes the watermark logo, if present.
-pub fn load_watermark() -> Option<ColorImage> {
-    load_file(Path::new(WATERMARK_PATH)).map(|img| to_color_image(&img.to_rgba8()))
+/// Loads the cover thumbnail of `song` synchronously.
+pub fn load_thumb_image(cfg: &Config, song: &SongInfo) -> ColorImage {
+    Worker::new(cfg).thumb(&song.file)
 }
 
 struct Worker {
@@ -235,26 +298,45 @@ impl Worker {
         }
     }
 
-    fn load(&self, song_file: &str, artist: &str) -> ArtImages {
-        let cover = ["readpicture", "albumart"]
+    /// The song's embedded or folder cover, or the backup art.
+    fn cover(&self, song_file: &str) -> DynamicImage {
+        ["readpicture", "albumart"]
             .into_iter()
             .find_map(|cmd| self.mpc_image(cmd, song_file))
-            .unwrap_or_else(|| (*self.backup).clone());
+            .unwrap_or_else(|| (*self.backup).clone())
+    }
+
+    fn thumb(&self, song_file: &str) -> ColorImage {
+        to_color_image(
+            &self
+                .cover(song_file)
+                .thumbnail(THUMB_MAX, THUMB_MAX)
+                .to_rgba8(),
+        )
+    }
+
+    fn load(&self, song_file: &str, artist: &str) -> ArtImages {
+        let cover = self.cover(song_file);
         let cover = if cover.width().max(cover.height()) > COVER_MAX {
             cover.resize(COVER_MAX, COVER_MAX, FilterType::Triangle)
         } else {
             cover
         };
         let small = cover.thumbnail(BACKDROP_SMALL, BACKDROP_SMALL).to_rgba8();
+        let artist = artist_background(artist);
+        let artist_brightness = artist.as_ref().map_or(0.5, |img| {
+            brightness(&img.thumbnail(PALETTE_SAMPLE, PALETTE_SAMPLE).to_rgba8())
+        });
 
         ArtImages {
+            artist_brightness,
             backdrop: to_color_image(&backdrop(&small)),
             motion: to_color_image(&motion(&small)),
             dominant: dominant_color(&small),
             brightness: brightness(&small),
             palette: palette(&imageops::thumbnail(&small, PALETTE_SAMPLE, PALETTE_SAMPLE)),
             cover: to_color_image(&cover.to_rgba8()),
-            artist_bg: artist_background(artist).map(|img| {
+            artist_bg: artist.map(|img| {
                 let img = if img.width().max(img.height()) > ARTIST_BG_MAX {
                     img.resize(ARTIST_BG_MAX, ARTIST_BG_MAX, FilterType::Triangle)
                 } else {
@@ -300,16 +382,27 @@ pub fn first_artist(artist: &str) -> String {
         .to_lowercase()
 }
 
-fn artist_background(artist: &str) -> Option<DynamicImage> {
+/// Candidate files of the artist image for `artist`, existing ones only.
+fn artist_image_paths(artist: &str) -> impl Iterator<Item = PathBuf> {
     let name = first_artist(artist);
-    if name.is_empty() {
-        return None;
-    }
-    ARTIST_EXTENSIONS
+    let names = if name.is_empty() {
+        0
+    } else {
+        ARTIST_EXTENSIONS.len()
+    };
+    ARTIST_EXTENSIONS[..names]
         .iter()
-        .map(|ext| PathBuf::from(ARTISTS_DIR).join(format!("{name}.{ext}")))
+        .map(move |ext| PathBuf::from(ARTISTS_DIR).join(format!("{name}.{ext}")))
         .filter(|path| path.is_file())
-        .find_map(|path| load_file(&path))
+}
+
+/// Whether `artists/` has an image for the first artist of `artist`.
+pub fn has_artist_image(artist: &str) -> bool {
+    artist_image_paths(artist).next().is_some()
+}
+
+fn artist_background(artist: &str) -> Option<DynamicImage> {
+    artist_image_paths(artist).find_map(|path| load_file(&path))
 }
 
 fn load_file(path: &Path) -> Option<DynamicImage> {

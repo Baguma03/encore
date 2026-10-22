@@ -16,7 +16,7 @@ use egui::{
 
 use mpd_display_rs::lyrics::LyricsState;
 
-use crate::art::ArtTextures;
+use crate::art::{ArtTextures, Thumb};
 use crate::player::PlayerState;
 
 pub const FONT_LIGHT: &str = "circular-book";
@@ -36,7 +36,8 @@ pub struct ArtView<'a> {
 pub struct View<'a> {
     pub player: &'a PlayerState,
     pub art: ArtView<'a>,
-    pub watermark: Option<&'a egui::TextureHandle>,
+    /// Cover thumbnail of a queued song, possibly not the current `player.next` yet.
+    pub next_cover: Option<&'a Thumb>,
     pub show_clock: bool,
     pub lyrics_enabled: bool,
     /// Lyrics of the current song; `NotFound` when disabled or nothing is playing.
@@ -47,6 +48,8 @@ pub struct View<'a> {
     pub capture: bool,
     /// Animated backdrop: the art drifts and turns behind the Apple and Vibrant layouts.
     pub motion: bool,
+    /// Use the artist image as the background when the song's artist has one.
+    pub artist_bg: bool,
 }
 
 /// Registers CircularStd Book as the default proportional font and Bold as the `"bold"` family.
@@ -118,11 +121,6 @@ pub fn fit_text(
     }
 }
 
-/// Rect of an image of `image_size` scaled by `scale` with its top-left corner at `top_left`.
-pub fn scaled_rect(image_size: Vec2, scale: f32, top_left: Pos2) -> Rect {
-    Rect::from_min_size(top_left, (image_size * scale).ceil())
-}
-
 /// Rect that makes an image of `image_size` cover `target` completely, centred and cropped by the clip.
 pub fn cover_rect(image_size: Vec2, target: Rect) -> Rect {
     if image_size.x <= 0.0 || image_size.y <= 0.0 {
@@ -163,12 +161,5 @@ mod tests {
         let tall = cover_rect(Vec2::new(500.0, 1000.0), target);
         assert_eq!(tall.width(), 1920.0);
         assert!(tall.height() >= 1080.0);
-    }
-
-    #[test]
-    fn scaled_rect_rounds_up() {
-        let r = scaled_rect(Vec2::new(10.0, 5.0), 1.55, Pos2::new(2.0, 3.0));
-        assert_eq!(r.min, Pos2::new(2.0, 3.0));
-        assert_eq!(r.size(), Vec2::new(16.0, 8.0));
     }
 }

@@ -298,7 +298,7 @@ pub fn fraction_at(track: Rect, x: f32) -> f32 {
 
 /// Thin rounded progress bar that thickens on hover and seeks on click or drag.
 pub fn seek_bar(ui: &egui::Ui, id: Id, track: Rect, progress: f32, enabled: bool) -> SeekBarOutput {
-    let pad = Vec2::new(track.height() * 2.0, track.height() * 4.0 + 6.0);
+    let pad = Vec2::new(track.height() * 1.5, track.height() * 2.5 + 6.0);
     let sense = if enabled {
         Sense::click_and_drag()
     } else {
@@ -338,7 +338,7 @@ pub fn seek_bar(ui: &egui::Ui, id: Id, track: Rect, progress: f32, enabled: bool
 
 /// Paints a [`seek_bar`] filled to `shown` with hover amount `hover` in `0.0..=1.0`.
 pub fn paint_seek_bar(painter: &Painter, track: Rect, shown: f32, hover: f32) {
-    let thickness = track.height() * lerp(1.0, 1.9, hover);
+    let thickness = track.height() * lerp(1.0, 1.5, hover);
     let bar = Rect::from_center_size(track.center(), Vec2::new(track.width(), thickness));
     let radius = (thickness / 2.0).min(255.0) as u8;
     painter.rect_filled(bar, radius, Color32::from_white_alpha(46));
@@ -354,7 +354,7 @@ pub fn paint_seek_bar(painter: &Painter, track: Rect, shown: f32, hover: f32) {
     if hover > 0.0 {
         painter.circle_filled(
             Pos2::new(filled.right(), bar.center().y),
-            thickness * 1.6 * hover,
+            thickness * 1.3 * hover,
             Color32::WHITE,
         );
     }
