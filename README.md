@@ -1,32 +1,54 @@
-# mpd-display-rs: A Spotify-like graphical display for MPD
+# mpd-display-rs: A Spotify/Apple Music-like graphical display for MPD
 
-Note that this is not a full MPD client, as it only *displays* data.
+Note that this is not a full MPD client, as it only *displays* data (plus basic playback controls).
 
 This is a replacement for my old [mpd-display](https://github.com/allylikesu/mpd-display), which was coded in Python using the Pygame engine. It was coded in one night, and I am not very proud of it.
 
 ### Improvements from python version
 - Faster start-up
-- Much lighter-weight, using Rust's [speedy2d](https://crates.io/crates/speedy2d) crate
+- Much lighter-weight, using Rust with [eframe/egui](https://crates.io/crates/eframe)
+- Runs natively on both Wayland and X11
 - Smooth updating progress bar
-- Doesn't spam mpc commands every frame (Uses the [mpd](https://crates.io/crates/mpd) crate for updating status every frame, gets album art on song change using `mpc readpicture`)
+- Doesn't spam mpc commands every frame (Uses the [mpd](https://crates.io/crates/mpd) crate for updating status, gets album art on song change using `mpc readpicture`)
+- Reconnects automatically if MPD goes away or restarts
+- Time-synced lyrics
 - Many more. The amount of sins that were committed in that old version still keep me up at night.
 ### Regressions from python version
-- Doesn't work properly under Wayland, must be launched with WINIT_UNIX_BACKEND=x11 ([speedy2d issue](https://github.com/QuantumBadger/Speedy2D/issues/112))
-- I used a lot of `unwrap()` on calls to mpd instead of proper error handling, so random crashes may be more common. I'll work on it.
 - Too lazy to implement the background gradient based on album art colors if there is no background image found for the current artist, I think the default grey background looks fine.
 
-Only tested on Linux. Requires MPC.
+Only tested on Linux. Requires MPC (used to fetch album art). `ffmpeg` (with libx264 and aac) is optional and only needed for [exporting lyric clips](#exporting-lyric-clips).
+
+## Layouts
+Two layouts are available. Switch between them at runtime with `l`, or choose the starting one with `MPD_DISPLAY_LAYOUT`.
+
+- **Apple Music-style** (default): a blurred album art backdrop, rounded album art with the title, "Artist — Album" and a progress bar below it, clickable previous/play-pause/next buttons, a seekable progress bar, and a time-synced lyrics column on the right. The active lyric line is highlighted, the column scrolls smoothly, and lines far from the active one fade out. An optional date/clock overlay can be toggled with `t`.
+- **Spotify-style**: modelled on the Spotify desktop client's fullscreen mode, with artist-specific background art (see [below](#obtaining-and-using-artist-background-images-from-spotify)) and an "Up Next" display when the current song hits 90% completion.
 
 ## Features
 - Toggleable fullscreen with the `f` or `F11` key
 - Fully reactive window, all screen elements will be properly scaled/positioned
 - Artist-specific background art (See more [here](#obtaining-and-using-artist-background-images-from-spotify))
-- Design basically fully ripped off of the Spotify desktop client's fullscreen mode
-- Click or press space to play/pause
-- "Up Next" display when current song hits 90% completion
+- Time-synced lyrics from local files, a cache, or [LRCLIB](#lyrics)
+- Click or press space to play/pause; `←` / `→` for previous/next track
 - Easy to quit with `Esc` or `q`
 - Toggle cursor visibility with `c`
 - Toggle a useless debug window with `d`
+- Export lyric clips as share-ready MP4s (see [below](#exporting-lyric-clips))
+
+### Keys
+| Key | Action |
+| --- | --- |
+| `f` / `F11` | Toggle fullscreen |
+| `c` | Toggle cursor visibility |
+| `d` | Toggle debug window |
+| `Space` (or click) | Play/pause |
+| `←` / `→` | Previous / next track |
+| `l` | Switch layout |
+| `y` | Toggle lyrics |
+| `t` | Toggle date/clock overlay |
+| `e` | Open/close the lyric clip export panel |
+| `[` / `]` | Mark the clip in-point / out-point at the current playback position |
+| `Esc` / `q` | Quit |
 
 ## Screenshots
 ![image](img/1.png)
@@ -46,19 +68,61 @@ Only tested on Linux. Requires MPC.
 ## Installation/Usage
 I'm too lazy to figure out how to make a proper cargo package.
 
-This program uses the environment variables MPD_HOST and MPD_PORT to connect to your MPD server. If these are not set, they default to localhost:6600. If your server has a password, MPD_HOST is formatted as pass@ip.
-
 Clone the repo, run `cargo build --release`, then create a startup script to execute the binary in the crate directory:
 ```
 #!/usr/bin/env bash
 cd <PATH TO CLONED REPO> || exit 1
 
-# Use this line if you're using Wayland
-#WINIT_UNIX_BACKEND=x11 target/release/mpd-display-rs
-
-# Use this line if you're not using Wayland
 target/release/mpd-display-rs
 ```
+
+### Environment variables
+| Variable | Description |
+| --- | --- |
+| `MPD_HOST` | MPD server host. Defaults to `localhost`. If your server has a password, format it as `pass@ip`. |
+| `MPD_PORT` | MPD server port. Defaults to `6600`. |
+| `MPD_MUSIC_DIR` | Your MPD music directory. Enables sidecar lyrics files next to the audio files and audio in exported clips. If unset, `music_directory` is read from `$XDG_CONFIG_HOME/mpd/mpd.conf` (`~/.config/mpd/mpd.conf` when unset), `~/.mpdconf`, or `/etc/mpd.conf`, whichever exists first. |
+| `MPD_DISPLAY_EXPORT_DIR` | Output folder for exported clips. Defaults to `~/Videos/mpd-display`. |
+| `MPD_DISPLAY_LAYOUT` | `spotify` or `apple`. Defaults to `apple`. |
+| `MPD_DISPLAY_LYRICS` | `on` or `off`. Defaults to `on`. |
+| `MPD_DISPLAY_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable LRCLIB lookups. Enabled by default. |
+
+## Exporting lyric clips
+Renders a share-ready MP4 of the Apple layout (lyrics, album art, title and progress bar) for a chosen part of the current song. Rendering happens offline in the background on the GPU, faster than real time, while the display keeps running. Requires `ffmpeg` with libx264 and aac.
+
+### Formats
+| Format | Resolution |
+| --- | --- |
+| 16:9 | 1920×1080 |
+| 9:16 (default) | 1080×1920 |
+| 1:1 | 1080×1080 |
+
+Pick one or several; each becomes its own file. Portrait and square have their own layouts, which are also used when the live window has that shape.
+
+### Choosing the range
+Press `e` to open the export panel.
+- Click the first lyric line, then the last (shift-click also works). The start snaps to 0.5 s before the first line, and the end to the start of the line after the last.
+- Nudge the start and end in 0.5 s steps in the panel.
+- Alternatively, mark while listening: `[` sets the in-point and `]` the out-point, then press `e`.
+- A clip can be at most 3 minutes long.
+- `Esc` closes the panel.
+
+### Audio
+Audio is cut from the song's file in the MPD music directory, with short fades, and can be toggled in the panel. The music directory comes from `MPD_MUSIC_DIR`, else `music_directory` in `$XDG_CONFIG_HOME/mpd/mpd.conf` (`~/.config/mpd/mpd.conf` when unset), `~/.mpdconf`, or `/etc/mpd.conf`. If the file cannot be found, the clip is exported without audio and the toast says so.
+
+### Output
+Files are written to `~/Videos/mpd-display/` (override with `MPD_DISPLAY_EXPORT_DIR`) and named `<Artist> - <Title> (1m05-1m35) 9x16.mp4`, with ` (2)`, ` (3)`, ... appended if the name is taken. Exports run one at a time. A toast in the bottom-right corner shows progress, its × cancels the export, and clicking the "Saved" toast opens the folder.
+
+## Lyrics
+Lyrics are looked up in this order, and the first hit wins:
+1. **Sidecar file** (requires `MPD_MUSIC_DIR`): `<music dir>/<song>.lrc`, or `.txt` for unsynced lyrics, next to the audio file.
+2. **Local folder**: `./lyrics/<artist> - <title>.lrc` (or `.txt`). The primary artist and a bare `<title>` are also tried, and names are matched case-insensitively.
+3. **Disk cache**: `~/.cache/mpd-display-rs/lyrics/`
+4. **[LRCLIB](https://lrclib.net)**: free, no API key needed.
+
+Results from LRCLIB are saved to the disk cache, so lyrics keep working offline afterwards. The next queued song is fetched ahead of time, and songs with no lyrics found are remembered for 7 days before being looked up again.
+
+Synced lyrics use the standard LRC format (`[mm:ss.xx] line`), and the `[offset:+/-ms]` tag is supported. Files without timestamps (and plain-text `.txt` files) are shown as unsynced lyrics.
 
 ## Obtaining and using artist background images from Spotify
 For Spotify's fullscreen mode, it uses a slightly darkened version of the main artist's profile banner as a background.
@@ -66,7 +130,7 @@ If the artist does not have a profile banner, a gradient based on the song's alb
 
 This behaviour is replicated by this program, but the images need to be manually obtained.
 If you don't care about Spotify and have your own images you want to use, that is totally cool!
-The format of the file should be `<artist name>.jpg`.
+The format of the file should be `<artist name>.jpg` (`.jpeg`, `.png` and `.webp` also work).
 The file name should be in **ALL LOWERCASE!**
 
 Obtaining profile banners from Spotify is simple but a little annoying. 
