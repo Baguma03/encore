@@ -1,7 +1,10 @@
 pub mod apple;
+pub mod backdrop;
 pub mod export_panel;
+pub mod lyrics_column;
 pub mod spotify;
 pub mod toasts;
+pub mod vibrant;
 pub mod widgets;
 
 use std::sync::Arc;
@@ -42,6 +45,8 @@ pub struct View<'a> {
     pub now: chrono::DateTime<chrono::Local>,
     /// Off-screen rendering: no clock, no hover effects and no interaction.
     pub capture: bool,
+    /// Animated backdrop: the art drifts and turns behind the Apple and Vibrant layouts.
+    pub motion: bool,
 }
 
 /// Registers CircularStd Book as the default proportional font and Bold as the `"bold"` family.

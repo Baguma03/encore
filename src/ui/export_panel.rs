@@ -10,7 +10,7 @@ use egui::{
 use mpd_display_rs::lyrics::{LyricLine, Lyrics, LyricsState};
 
 use super::{font_bold, font_light, with_alpha};
-use crate::export::{Aspect, ExportRequest};
+use crate::export::{Aspect, ExportRequest, Style};
 use crate::player::SongInfo;
 
 /// Longest clip that can be exported.
@@ -174,18 +174,22 @@ pub struct ExportPanel {
     end: Duration,
     with_audio: bool,
     audio_found: bool,
+    style: Style,
+    motion: bool,
     scroll_to: Option<usize>,
 }
 
 impl ExportPanel {
     /// Opens on the marked range if there is one, else on the active lyric line, else on a
-    /// stretch starting at `elapsed`.
+    /// stretch starting at `elapsed`, with `style` and `motion` picked.
     pub fn new(
         song: SongInfo,
         lyrics: LyricsState,
         elapsed: Duration,
         marks: Marks,
         audio_found: bool,
+        style: Style,
+        motion: bool,
     ) -> Self {
         let mut panel = Self {
             song,
@@ -195,6 +199,8 @@ impl ExportPanel {
             end: Duration::ZERO,
             with_audio: true,
             audio_found,
+            style,
+            motion,
             scroll_to: None,
         };
         if let Some((start, end)) = marks.range(panel.song.duration) {
@@ -268,6 +274,8 @@ impl ExportPanel {
                 .collect(),
             with_audio: self.with_audio,
             fps: EXPORT_FPS,
+            style: self.style,
+            motion: self.motion,
         }
     }
 
@@ -333,6 +341,23 @@ impl ExportPanel {
                     }
                 }
             }
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for style in Style::ALL {
+                if chip(ui, style.display_name(), self.style == style).clicked() {
+                    self.style = style;
+                }
+            }
+            ui.add_space(16.0);
+            if switch(ui, &mut self.motion).clicked() {
+                self.motion = !self.motion;
+            }
+            ui.label(
+                RichText::new("Motion")
+                    .font(font_light(15.0))
+                    .color(Color32::WHITE),
+            );
         });
         ui.horizontal(|ui| {
             if switch(ui, &mut self.with_audio).clicked() {
@@ -539,9 +564,14 @@ fn nudge(ui: &mut Ui, text: &str) -> Response {
     response
 }
 
-/// Toggleable format chip.
+/// Toggleable chip for a format or style, at least 64 points wide.
 fn chip(ui: &mut Ui, text: &str, on: bool) -> Response {
-    let (rect, response) = hit(ui, Vec2::new(64.0, 32.0), true);
+    let text_width = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font_bold(14.0), Color32::WHITE)
+        .size()
+        .x;
+    let (rect, response) = hit(ui, Vec2::new((text_width + 24.0).max(64.0), 32.0), true);
     let painter = ui.painter();
     if on {
         painter.rect_filled(rect, 16, with_alpha(Color32::WHITE, 0.92));
@@ -783,6 +813,8 @@ mod snapshot {
             Duration::from_secs(30),
             Marks::default(),
             false,
+            Style::Vibrant,
+            true,
         );
         panel.pick(6, false);
         let mut formats = vec![Aspect::Portrait, Aspect::Square];
@@ -817,6 +849,7 @@ mod snapshot {
                         lyrics: lyrics.clone(),
                         now: chrono::Local::now(),
                         capture: false,
+                        motion: false,
                     };
                     apple::draw(ui, &view);
                     let ctx = ui.ctx().clone();

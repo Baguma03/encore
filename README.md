@@ -19,9 +19,11 @@ This is a replacement for my old [mpd-display](https://github.com/allylikesu/mpd
 Only tested on Linux. Requires MPC (used to fetch album art). `ffmpeg` (with libx264 and aac) is optional and only needed for [exporting lyric clips](#exporting-lyric-clips).
 
 ## Layouts
-Two layouts are available. Switch between them at runtime with `l`, or choose the starting one with `MPD_DISPLAY_LAYOUT`.
+Three layouts are available. `l` cycles through them at runtime (Apple → Vibrant → Spotify), and `MPD_DISPLAY_LAYOUT` chooses the starting one.
 
 - **Apple Music-style** (default): a blurred album art backdrop, rounded album art with the title, "Artist — Album" and a progress bar below it, clickable previous/play-pause/next buttons, a seekable progress bar, and a time-synced lyrics column on the right. The active lyric line is highlighted, the column scrolls smoothly, and lines far from the active one fade out. An optional date/clock overlay can be toggled with `t`.
+- **Vibrant**: modelled on Apple Music's colourful lyrics view. The backdrop is bright: enlarged, heavily blurred copies of the album art with a faint gradient of its main colours over them, cross-fading between songs. Light covers stay light; a soft dark halo behind the text, and a mild wash on very light art, keep white text readable. Square album art sits on the left with the elapsed and remaining time, a thin seekable progress bar, and the title and "Artist — Album" centred beneath it, and the time-synced lyrics are on the right. There are no transport buttons; clicking anywhere toggles play/pause. Tall and square windows stack the art above the lyrics. The `t` clock overlay works here too.
+- **Moving backdrop**: in the Apple and Vibrant layouts, enlarged, heavily blurred copies of the album art slowly drift, turn and blend into each other, like Apple Music's animated artwork. It keeps moving while playback is paused. Toggle it with `b`, or start without it with `MPD_DISPLAY_MOTION=off`; with it off, the backdrop is still.
 - **Spotify-style**: modelled on the Spotify desktop client's fullscreen mode, with artist-specific background art (see [below](#obtaining-and-using-artist-background-images-from-spotify)) and an "Up Next" display when the current song hits 90% completion.
 
 ## Features
@@ -43,9 +45,10 @@ Two layouts are available. Switch between them at runtime with `l`, or choose th
 | `d` | Toggle debug window |
 | `Space` (or click) | Play/pause |
 | `←` / `→` | Previous / next track |
-| `l` | Switch layout |
+| `l` | Cycle layouts (Apple → Vibrant → Spotify) |
 | `y` | Toggle lyrics |
 | `t` | Toggle date/clock overlay |
+| `b` | Toggle the moving backdrop |
 | `e` | Open/close the lyric clip export panel |
 | `[` / `]` | Mark the clip in-point / out-point at the current playback position |
 | `Esc` / `q` | Quit |
@@ -83,12 +86,13 @@ target/release/mpd-display-rs
 | `MPD_PORT` | MPD server port. Defaults to `6600`. |
 | `MPD_MUSIC_DIR` | Your MPD music directory. Enables sidecar lyrics files next to the audio files and audio in exported clips. If unset, `music_directory` is read from `$XDG_CONFIG_HOME/mpd/mpd.conf` (`~/.config/mpd/mpd.conf` when unset), `~/.mpdconf`, or `/etc/mpd.conf`, whichever exists first. |
 | `MPD_DISPLAY_EXPORT_DIR` | Output folder for exported clips. Defaults to `~/Videos/mpd-display`. |
-| `MPD_DISPLAY_LAYOUT` | `spotify` or `apple`. Defaults to `apple`. |
+| `MPD_DISPLAY_LAYOUT` | `apple`, `vibrant` or `spotify`. Defaults to `apple`. |
 | `MPD_DISPLAY_LYRICS` | `on` or `off`. Defaults to `on`. |
+| `MPD_DISPLAY_MOTION` | `on` or `off`: the moving backdrop of the Apple and Vibrant layouts. Defaults to `on`. |
 | `MPD_DISPLAY_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable LRCLIB lookups. Enabled by default. |
 
 ## Exporting lyric clips
-Renders a share-ready MP4 of the Apple layout (lyrics, album art, title and progress bar) for a chosen part of the current song. Rendering happens offline in the background on the GPU, faster than real time, while the display keeps running. Requires `ffmpeg` with libx264 and aac.
+Renders a share-ready MP4 of the Apple or Vibrant layout (lyrics, album art, title and progress bar) for a chosen part of the current song. Rendering happens offline in the background on the GPU, faster than real time, while the display keeps running. Requires `ffmpeg` with libx264 and aac.
 
 ### Formats
 | Format | Resolution |
@@ -98,6 +102,9 @@ Renders a share-ready MP4 of the Apple layout (lyrics, album art, title and prog
 | 1:1 | 1080×1080 |
 
 Pick one or several; each becomes its own file. Portrait and square have their own layouts, which are also used when the live window has that shape.
+
+### Style
+The panel's **Dark** and **Vibrant** chips choose the look of the clip: the dark Apple layout over blurred art, or the colourful Vibrant layout. The panel starts on Vibrant while the Vibrant layout is shown, and on Dark otherwise. The **Motion** switch exports the moving backdrop, or a still one when off; it starts at the display's current setting.
 
 ### Choosing the range
 Press `e` to open the export panel.

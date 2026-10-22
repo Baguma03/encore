@@ -6,7 +6,7 @@ use mpd_display_rs::lyrics::{Lyrics, LyricsConfig, LyricsProvider, LyricsState};
 
 use crate::art::ArtLoader;
 use crate::config::{Config, Layout};
-use crate::export::{self, Aspect, ExportJob, ExportRequest, ExportStatus};
+use crate::export::{self, Aspect, ExportJob, ExportRequest, ExportStatus, Style};
 use crate::player::{Command, PlayState, Player, PlayerState, SongInfo};
 use crate::ui::export_panel::{ExportPanel, Marks, PanelResult};
 use crate::ui::toasts::{Progress, Toast, Toasts};
@@ -32,6 +32,7 @@ enum Action {
     Layout,
     Lyrics,
     Clock,
+    Motion,
     Previous,
     Next,
     OpenExport,
@@ -59,6 +60,7 @@ fn key_action(key: Key, panel_open: bool) -> Option<Action> {
         Key::L => Action::Layout,
         Key::Y => Action::Lyrics,
         Key::T => Action::Clock,
+        Key::B => Action::Motion,
         Key::ArrowLeft => Action::Previous,
         Key::ArrowRight => Action::Next,
         Key::E => Action::OpenExport,
@@ -79,6 +81,7 @@ pub struct App {
     show_debug: bool,
     lyrics_enabled: bool,
     show_clock: bool,
+    motion: bool,
     export_panel: Option<ExportPanel>,
     /// Formats ticked in the export panel, kept for the session.
     export_formats: Vec<Aspect>,
@@ -112,6 +115,7 @@ impl App {
         Self {
             layout: config.layout,
             lyrics_enabled: config.lyrics_enabled,
+            motion: config.motion,
             config,
             player,
             art,
@@ -165,9 +169,10 @@ impl App {
             Action::Debug => self.show_debug = !self.show_debug,
             Action::TogglePause => self.player.send(Command::TogglePause),
             Action::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
-            Action::Layout => self.layout = self.layout.toggle(),
+            Action::Layout => self.layout = self.layout.next(),
             Action::Lyrics => self.lyrics_enabled = !self.lyrics_enabled,
             Action::Clock => self.show_clock = !self.show_clock,
+            Action::Motion => self.motion = !self.motion,
             Action::Previous => self.player.send(Command::Previous),
             Action::Next => self.player.send(Command::Next),
             Action::OpenExport => {
@@ -213,6 +218,8 @@ impl App {
             elapsed,
             self.marks,
             audio_found,
+            Style::for_layout(self.layout),
+            self.motion,
         ));
     }
 
@@ -331,6 +338,7 @@ impl App {
             lyrics,
             now: chrono::Local::now(),
             capture: false,
+            motion: self.motion,
         }
     }
 
@@ -339,6 +347,7 @@ impl App {
         let cmd = match self.layout {
             Layout::Spotify => ui::spotify::draw(ui, &view),
             Layout::Apple => ui::apple::draw(ui, &view),
+            Layout::Vibrant => ui::vibrant::draw(ui, &view),
         };
         // The export panel's backdrop blocks clicks; this guards against any that slip through.
         if let Some(cmd) = cmd.filter(|_| self.export_panel.is_none()) {
@@ -452,7 +461,9 @@ impl eframe::App for App {
 
         let fading = self.art.fade() < 1.0;
         let overlays = self.export_panel.is_some() || progress.is_some() || !self.toasts.is_empty();
-        if state.state == PlayState::Playing || fading || overlays {
+        // The moving backdrop keeps flowing while paused.
+        let moving = self.motion && self.layout != Layout::Spotify;
+        if state.state == PlayState::Playing || fading || overlays || moving {
             ctx.request_repaint_after(PLAYING_FRAME);
         } else {
             ctx.request_repaint_after(IDLE_TICK);
@@ -474,6 +485,7 @@ mod tests {
             Key::L,
             Key::Y,
             Key::T,
+            Key::B,
             Key::D,
             Key::C,
             Key::F,

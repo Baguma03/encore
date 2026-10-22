@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use log::{info, warn};
 use mpd_display_rs::lyrics::LyricsState;
 
-use crate::config::Config;
+use crate::config::{Config, Layout};
 use crate::player::SongInfo;
 use ffmpeg::Encoder;
 use render::Renderer;
@@ -65,6 +65,33 @@ impl Aspect {
     }
 }
 
+/// Look of an exported clip: the dark Apple layout or the colourful Vibrant one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Style {
+    #[default]
+    Dark,
+    Vibrant,
+}
+
+impl Style {
+    pub const ALL: [Style; 2] = [Style::Dark, Style::Vibrant];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Style::Dark => "Dark",
+            Style::Vibrant => "Vibrant",
+        }
+    }
+
+    /// The style matching the live layout, falling back to dark.
+    pub fn for_layout(layout: Layout) -> Self {
+        match layout {
+            Layout::Vibrant => Style::Vibrant,
+            Layout::Apple | Layout::Spotify => Style::Dark,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ExportRequest {
     pub song: SongInfo,
@@ -76,6 +103,9 @@ pub struct ExportRequest {
     pub formats: Vec<Aspect>,
     pub with_audio: bool,
     pub fps: u32,
+    pub style: Style,
+    /// Animated backdrop.
+    pub motion: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -788,13 +818,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Exports 6 seconds of a library song in every format with the Apple scene and a fixture
-    /// LRC, then checks the files with ffprobe and saves frames at 1s and 4s next to them.
-    /// Set `MPD_DISPLAY_TEST_SONG` to an MPD-relative file and `MPD_DISPLAY_EXPORT_DIR` to the
-    /// output folder; MPD is only queried for tags and art.
+    /// Exports 6 seconds of a library song in every format with a fixture LRC, then checks the
+    /// files with ffprobe and saves frames at 1s to 4s next to them.
+    /// Set `MPD_DISPLAY_TEST_SONG` to an MPD-relative file, `MPD_DISPLAY_EXPORT_DIR` to the
+    /// output folder, and optionally `MPD_DISPLAY_TEST_STYLE=vibrant` and
+    /// `MPD_DISPLAY_TEST_MOTION=off`; MPD is only queried for tags and art.
     #[test]
     #[ignore = "needs a GPU, ffmpeg, MPD and a song from the library"]
-    fn apple_export_of_library_song() {
+    fn export_of_library_song() {
         let Ok(file) = std::env::var("MPD_DISPLAY_TEST_SONG") else {
             eprintln!("skipped: MPD_DISPLAY_TEST_SONG is not set");
             return;
@@ -835,6 +866,11 @@ mod tests {
             formats: Aspect::ALL.to_vec(),
             with_audio: true,
             fps: 30,
+            style: match std::env::var("MPD_DISPLAY_TEST_STYLE").as_deref() {
+                Ok("vibrant") => Style::Vibrant,
+                _ => Style::Dark,
+            },
+            motion: std::env::var("MPD_DISPLAY_TEST_MOTION").as_deref() != Ok("off"),
         };
         let began = Instant::now();
         let job = spawn(&cfg, req, Box::new(|| {}));
@@ -876,7 +912,7 @@ mod tests {
                 .expect("duration");
             assert!((duration - 6.0).abs() < 0.2, "duration {duration}");
 
-            for at in [1, 4] {
+            for at in [1, 2, 3, 4] {
                 let png = cfg
                     .export_dir
                     .join(format!("frame-{}-{at}s.png", aspect.label()));
@@ -916,6 +952,8 @@ mod tests {
             formats: vec![Aspect::Square, Aspect::Square],
             with_audio: true,
             fps: 30,
+            style: Style::Dark,
+            motion: true,
         };
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = Arc::clone(&calls);

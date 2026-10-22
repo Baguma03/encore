@@ -9,13 +9,16 @@ const DEFAULT_PORT: u16 = 6600;
 pub enum Layout {
     Spotify,
     Apple,
+    Vibrant,
 }
 
 impl Layout {
-    pub fn toggle(self) -> Self {
+    /// The layout after this one in the cycle Apple → Vibrant → Spotify.
+    pub fn next(self) -> Self {
         match self {
+            Layout::Apple => Layout::Vibrant,
+            Layout::Vibrant => Layout::Spotify,
             Layout::Spotify => Layout::Apple,
-            Layout::Apple => Layout::Spotify,
         }
     }
 }
@@ -32,6 +35,8 @@ pub struct Config {
     pub layout: Layout,
     pub lyrics_enabled: bool,
     pub lyrics_online: bool,
+    /// Animated backdrop behind the Apple and Vibrant layouts.
+    pub motion: bool,
 }
 
 impl Config {
@@ -97,6 +102,7 @@ impl Config {
             .as_deref()
         {
             Some("spotify") => Layout::Spotify,
+            Some("vibrant") => Layout::Vibrant,
             Some("apple") | None => Layout::Apple,
             Some(other) => {
                 warn!("unknown MPD_DISPLAY_LAYOUT {other:?}, using apple");
@@ -129,6 +135,7 @@ impl Config {
             layout,
             lyrics_enabled: get("MPD_DISPLAY_LYRICS").is_none_or(|v| !is_off(&v)),
             lyrics_online: get("MPD_DISPLAY_LYRICS_ONLINE").is_none_or(|v| !is_off(&v)),
+            motion: get("MPD_DISPLAY_MOTION").is_none_or(|v| !is_off(&v)),
         }
     }
 
@@ -220,6 +227,14 @@ mod tests {
         assert_eq!(cfg.layout, Layout::Apple);
         assert!(cfg.lyrics_enabled);
         assert!(cfg.lyrics_online);
+        assert!(cfg.motion);
+    }
+
+    #[test]
+    fn motion_switch() {
+        assert!(!parse(&[("MPD_DISPLAY_MOTION", "off")]).motion);
+        assert!(!parse(&[("MPD_DISPLAY_MOTION", "0")]).motion);
+        assert!(parse(&[("MPD_DISPLAY_MOTION", "on")]).motion);
     }
 
     #[test]
@@ -263,9 +278,22 @@ mod tests {
     }
 
     #[test]
-    fn layout_toggle() {
-        assert_eq!(Layout::Apple.toggle(), Layout::Spotify);
-        assert_eq!(Layout::Spotify.toggle(), Layout::Apple);
+    fn layout_cycle() {
+        assert_eq!(Layout::Apple.next(), Layout::Vibrant);
+        assert_eq!(Layout::Vibrant.next(), Layout::Spotify);
+        assert_eq!(Layout::Spotify.next(), Layout::Apple);
+    }
+
+    #[test]
+    fn vibrant_layout_from_env() {
+        assert_eq!(
+            parse(&[("MPD_DISPLAY_LAYOUT", "vibrant")]).layout,
+            Layout::Vibrant
+        );
+        assert_eq!(
+            parse(&[("MPD_DISPLAY_LAYOUT", " Vibrant ")]).layout,
+            Layout::Vibrant
+        );
     }
 
     #[test]

@@ -3,14 +3,15 @@
 //! tall and square windows stack the art above the lyrics.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use egui::epaint::{RectShape, Shadow};
-use egui::{Align2, Color32, Galley, Id, Painter, Pos2, Rect, Sense, Vec2};
-use mpd_display_rs::lyrics::{Lyrics, LyricsState};
+use egui::{Align2, Color32, FontId, Galley, Id, Painter, Pos2, Rect, Sense, Vec2};
 
+use super::backdrop;
+use super::lyrics_column::{self, LyricsColumn};
 use super::widgets::{
-    self, ease, edge_fade, icon_button, lerp, paint_blurred_galley, paint_icon_button,
-    paint_seek_bar, seek_bar, smooth_value, Icon,
+    self, ease, icon_button, lerp, paint_icon_button, paint_seek_bar, seek_bar, Icon,
 };
 use super::{cover_rect, fit_text, fmt_time, font_bold, font_light, with_alpha, View, FULL_UV};
 use crate::art::ArtTextures;
@@ -19,13 +20,7 @@ use crate::player::{Command, PlayState, SongInfo};
 /// Height of the art-and-controls block as a multiple of the art size.
 const BLOCK_HEIGHT: f32 = 1.56;
 /// Seconds for the art column to slide between centred and left-aligned.
-const COLUMN_SLIDE: f32 = 0.7;
-/// Seconds for a lyric line to grow into or out of the active style.
-const LINE_EMPHASIS: f32 = 0.35;
-/// Exponential rate of the lyrics scroll, per second.
-const SCROLL_RATE: f32 = 7.0;
-/// Size of inactive lyric lines relative to the active one.
-const INACTIVE_SCALE: f32 = 0.9;
+pub const COLUMN_SLIDE: f32 = 0.7;
 /// Height of the lyrics column's active line, as a fraction from its top.
 const LYRICS_ANCHOR: f32 = 0.36;
 /// Width-to-height ratios at or beyond which the layout is landscape or portrait.
@@ -33,6 +28,10 @@ const LANDSCAPE_ASPECT: f32 = 1.2;
 const PORTRAIT_ASPECT: f32 = 0.8;
 
 const MUTED: f32 = 0.6;
+/// Corner radius of the art as a fraction of its side.
+const ART_RADIUS: f32 = 0.03;
+/// Black wash over the full-brightness moving art.
+const MOTION_DARKENING: f32 = 0.52;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Orientation {
@@ -55,14 +54,23 @@ impl Orientation {
 }
 
 /// Title and "Artist — Album" lines.
-struct Meta {
+pub struct Meta {
     title: Arc<Galley>,
     subtitle: Arc<Galley>,
     gap: f32,
 }
 
 impl Meta {
-    fn new(painter: &Painter, song: &SongInfo, title: f32, subtitle: f32, width: f32) -> Self {
+    /// Lines of font sizes `title` and `subtitle`, shrunk to fit `width`, with the subtitle at
+    /// opacity `muted`.
+    pub fn new(
+        painter: &Painter,
+        song: &SongInfo,
+        title: f32,
+        subtitle: f32,
+        width: f32,
+        muted: f32,
+    ) -> Self {
         let sub = match (song.artist.is_empty(), song.album.is_empty()) {
             (false, false) => format!("{} — {}", song.artist, song.album),
             (false, true) => song.artist.clone(),
@@ -83,18 +91,18 @@ impl Meta {
                 font_light,
                 subtitle,
                 width,
-                with_alpha(Color32::WHITE, MUTED),
+                with_alpha(Color32::WHITE, muted),
             ),
             gap: title / 7.5,
         }
     }
 
-    fn height(&self) -> f32 {
+    pub fn height(&self) -> f32 {
         self.title.size().y + self.gap + self.subtitle.size().y
     }
 
-    /// Paints the lines below `pos`, centred on it or starting at it.
-    fn paint(&self, painter: &Painter, pos: Pos2, centered: bool) {
+    /// Each line with its top-left corner, below `pos` and centred on it or starting at it.
+    fn lines(&self, pos: Pos2, centered: bool) -> [(Pos2, &Arc<Galley>); 2] {
         let x = |g: &Galley| {
             if centered {
                 pos.x - g.size().x / 2.0
@@ -102,17 +110,33 @@ impl Meta {
                 pos.x
             }
         };
-        painter.galley(
-            Pos2::new(x(&self.title), pos.y),
-            self.title.clone(),
-            Color32::WHITE,
-        );
         let y = pos.y + self.title.size().y + self.gap;
-        painter.galley(
-            Pos2::new(x(&self.subtitle), y),
-            self.subtitle.clone(),
-            Color32::WHITE,
-        );
+        [
+            (Pos2::new(x(&self.title), pos.y), &self.title),
+            (Pos2::new(x(&self.subtitle), y), &self.subtitle),
+        ]
+    }
+
+    /// Paints the lines below `pos`, centred on it or starting at it.
+    pub fn paint(&self, painter: &Painter, pos: Pos2, centered: bool) {
+        for (at, galley) in self.lines(pos, centered) {
+            painter.galley(at, galley.clone(), Color32::WHITE);
+        }
+    }
+
+    /// Paints a soft dark halo of opacity `alpha` and size `radius` behind the lines placed as
+    /// by [`Meta::paint`].
+    pub fn paint_shadow(
+        &self,
+        painter: &Painter,
+        pos: Pos2,
+        centered: bool,
+        alpha: f32,
+        radius: f32,
+    ) {
+        for (at, galley) in self.lines(pos, centered) {
+            widgets::paint_text_shadow(painter, at, galley, alpha, radius);
+        }
     }
 }
 
@@ -176,17 +200,18 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
     };
     let painter = ui.painter_at(screen);
     let unit = screen.width().min(screen.height());
+    let time = ctx.input(|i| i.time);
 
     let show_clock = view.show_clock && !view.capture;
     let clock_t = ease(ctx.animate_bool_with_time(id.with("clock"), show_clock, 0.4));
     let lyrics_t = ease(ctx.animate_value_with_time(
         id.with("lyrics"),
-        lyrics_column_target(ui, id, view),
+        lyrics_column::column_target(ui, id, view),
         COLUMN_SLIDE,
     ));
 
     let Some(song) = view.player.current.as_ref() else {
-        paint_backdrop(&painter, screen, view, None);
+        paint_backdrop(&painter, screen, view, time, None);
         let text = if view.player.connected {
             "Nothing playing"
         } else {
@@ -215,6 +240,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         &painter,
         screen,
         view,
+        time,
         Some((place.art.center(), place.art.width())),
     );
     if clock_t > 0.0 {
@@ -230,10 +256,12 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
             base: place.lyrics_base,
             anchor: place.lyrics_anchor,
             alpha: lyrics_t,
+            line_alpha: lyrics_column::line_alpha,
+            shadow: 0.0,
         };
-        paint_lyrics_column(ui, id.with(&song.file), &column, view);
+        lyrics_column::paint(ui, id.with(&song.file), &column, view);
     }
-    paint_art(&painter, place.art, view);
+    paint_art(&painter, place.art, view, ART_RADIUS);
     place
         .meta
         .paint(&painter, place.meta_pos, place.meta_centered);
@@ -259,7 +287,7 @@ fn landscape(
         .min(content.height() / BLOCK_HEIGHT);
     let column_x = lerp(screen.center().x, screen.left() + w * 0.27, lyrics_t);
 
-    let meta = Meta::new(painter, song, s * 0.075, s * 0.055, s);
+    let meta = Meta::new(painter, song, s * 0.075, s * 0.055, s, MUTED);
     let block_h = s * 1.33 + meta.height() + Controls::time_height(painter, s);
     let top = content.center().y - block_h / 2.0;
     let art = Rect::from_min_size(Pos2::new(column_x - s / 2.0, top), Vec2::splat(s));
@@ -308,7 +336,7 @@ fn portrait(
     let controls_top = screen.bottom() - h * 0.045 - Controls::height(painter, control_unit);
 
     let s = lerp((w * 0.78).min(h * 0.42), (w * 0.62).min(h * 0.36), lyrics_t);
-    let meta = Meta::new(painter, song, u * 0.05, u * 0.036, s);
+    let meta = Meta::new(painter, song, u * 0.05, u * 0.036, s, MUTED);
     let meta_gap = u * 0.045;
     let block_h = s + meta_gap + meta.height();
     let centered = (top + controls_top - u * 0.04 - block_h) / 2.0;
@@ -366,6 +394,7 @@ fn square(
         u * 0.05,
         u * 0.034,
         w - 2.0 * pad - s - meta_gap,
+        MUTED,
     );
     let centered = (top + controls_top - u * 0.04 - s) / 2.0;
     let art_top = lerp(centered.max(top), top, lyrics_t);
@@ -405,51 +434,26 @@ fn paint_controls(
     c: &Controls,
 ) -> Option<Command> {
     let u = c.unit;
-    let mut command = None;
     let mut y = c.top;
 
-    let duration = song.duration.unwrap_or_default();
     let thickness = Controls::thickness(u);
     let track = Rect::from_center_size(
         Pos2::new(c.center_x, y + thickness / 2.0),
         Vec2::new(c.bar_width, thickness),
     );
-    let progress = view.player.progress();
-    let elapsed = if view.capture {
-        paint_seek_bar(painter, track, progress, 0.0);
-        view.player.elapsed()
-    } else {
-        let bar = seek_bar(ui, id.with("seek"), track, progress, !duration.is_zero());
-        if let Some(fraction) = bar.seek {
-            command = Some(Command::SeekTo(duration.mul_f32(fraction)));
-        }
-        if bar.scrubbing {
-            duration.mul_f32(bar.shown)
-        } else {
-            view.player.elapsed()
-        }
-    };
+    let (elapsed, seek) = seek_track(ui, painter, id, view, song, track);
+    let mut command = seek;
 
-    let time_font = Controls::time_font(u);
-    let time_color = with_alpha(Color32::WHITE, 0.5);
     y += thickness + u * 0.03;
-    painter.text(
-        Pos2::new(track.left(), y),
-        Align2::LEFT_TOP,
-        fmt_time(elapsed),
-        time_font.clone(),
-        time_color,
+    paint_times(
+        painter,
+        track,
+        y,
+        elapsed,
+        song.duration.unwrap_or_default(),
+        Controls::time_font(u),
+        with_alpha(Color32::WHITE, 0.5),
     );
-    if !duration.is_zero() {
-        let remaining = format!("-{}", fmt_time(duration.saturating_sub(elapsed)));
-        painter.text(
-            Pos2::new(track.right(), y),
-            Align2::RIGHT_TOP,
-            remaining,
-            time_font,
-            time_color,
-        );
-    }
     y += Controls::time_height(painter, u) + u * 0.09;
 
     let playing = view.player.state == PlayState::Playing;
@@ -489,6 +493,64 @@ fn paint_controls(
     command
 }
 
+/// Paints the seek bar on `track`, interactive unless capturing. Returns the position to show,
+/// which follows the pointer while scrubbing, and the seek a click or drag asked for.
+pub fn seek_track(
+    ui: &egui::Ui,
+    painter: &Painter,
+    id: Id,
+    view: &View,
+    song: &SongInfo,
+    track: Rect,
+) -> (Duration, Option<Command>) {
+    let duration = song.duration.unwrap_or_default();
+    let progress = view.player.progress();
+    if view.capture {
+        paint_seek_bar(painter, track, progress, 0.0);
+        return (view.player.elapsed(), None);
+    }
+    let bar = seek_bar(ui, id.with("seek"), track, progress, !duration.is_zero());
+    let command = bar
+        .seek
+        .map(|fraction| Command::SeekTo(duration.mul_f32(fraction)));
+    let elapsed = if bar.scrubbing {
+        duration.mul_f32(bar.shown)
+    } else {
+        view.player.elapsed()
+    };
+    (elapsed, command)
+}
+
+/// Paints the elapsed time at the left edge of `track` and the remaining time at its right
+/// edge, with their tops at `y`. The remaining time is left out when `duration` is unknown.
+pub fn paint_times(
+    painter: &Painter,
+    track: Rect,
+    y: f32,
+    elapsed: Duration,
+    duration: Duration,
+    font: FontId,
+    color: Color32,
+) {
+    painter.text(
+        Pos2::new(track.left(), y),
+        Align2::LEFT_TOP,
+        fmt_time(elapsed),
+        font.clone(),
+        color,
+    );
+    if !duration.is_zero() {
+        let remaining = format!("-{}", fmt_time(duration.saturating_sub(elapsed)));
+        painter.text(
+            Pos2::new(track.right(), y),
+            Align2::RIGHT_TOP,
+            remaining,
+            font,
+            color,
+        );
+    }
+}
+
 fn cmd_key(cmd: Command) -> &'static str {
     match cmd {
         Command::ToggleRandom => "shuffle",
@@ -500,37 +562,48 @@ fn cmd_key(cmd: Command) -> &'static str {
     }
 }
 
-/// 1.0 when the lyrics column should be shown, 0.0 when the art should sit centred.
-/// While lyrics are loading the previous choice is kept, so songs without lyrics don't bounce.
-fn lyrics_column_target(ui: &egui::Ui, id: Id, view: &View) -> f32 {
-    let id = id.with("lyrics-shown");
-    let shown = match &view.lyrics {
-        _ if !view.lyrics_enabled || view.player.current.is_none() => false,
-        LyricsState::Found(lyrics) => !lyrics.is_empty(),
-        LyricsState::NotFound => false,
-        LyricsState::Loading => ui.ctx().data(|d| d.get_temp(id)).unwrap_or(false),
-    };
-    ui.ctx().data_mut(|d| d.insert_temp(id, shown));
-    if shown {
-        1.0
-    } else {
-        0.0
-    }
-}
-
 /// Scales the colour channels of an opaque colour.
 fn shade(color: Color32, k: f32) -> Color32 {
     let f = |c: u8| (c as f32 * k).clamp(0.0, 255.0) as u8;
     Color32::from_rgb(f(color.r()), f(color.g()), f(color.b()))
 }
 
-/// Darkened, blurred art filling the window, a glow behind the art and a vignette.
-fn paint_backdrop(painter: &Painter, screen: Rect, view: &View, glow: Option<(Pos2, f32)>) {
-    let alpha = view.art.fade;
-    let current = view.art.current;
-    let dominant = current.map_or(Color32::from_rgb(40, 40, 48), |a| a.dominant);
+/// Darkened, blurred art filling the window, a glow behind the art and a vignette. With motion
+/// on, the art drifts and turns at egui input time `time`.
+fn paint_backdrop(
+    painter: &Painter,
+    screen: Rect,
+    view: &View,
+    time: f64,
+    glow: Option<(Pos2, f32)>,
+) {
+    let dominant = view
+        .art
+        .current
+        .map_or(Color32::from_rgb(40, 40, 48), |a| a.dominant);
     painter.rect_filled(screen, 0.0, shade(dominant, 0.3));
 
+    if view.motion {
+        backdrop::paint_motion(painter, screen, &view.art, time, 1.0);
+        painter.rect_filled(screen, 0.0, with_alpha(Color32::BLACK, MOTION_DARKENING));
+    } else {
+        paint_still_art(painter, screen, view);
+    }
+
+    if let Some((center, size)) = glow {
+        // Zero alpha in premultiplied colour blends additively.
+        let lit = shade(dominant, 0.55);
+        let additive = Color32::from_rgba_premultiplied(lit.r(), lit.g(), lit.b(), 0);
+        widgets::paint_radial_glow(painter, center, Vec2::splat(size * 1.15), additive);
+    }
+    let inset = Vec2::new(screen.width() * 0.22, screen.height() * 0.3);
+    widgets::paint_vignette(painter, screen, inset, Color32::from_black_alpha(150));
+}
+
+/// The pre-darkened blurred art stretched over the window, cross-fading between songs.
+fn paint_still_art(painter: &Painter, screen: Rect, view: &View) {
+    let alpha = view.art.fade;
+    let current = view.art.current;
     let draw = |art: &ArtTextures, a: f32| {
         let tex = &art.backdrop;
         painter.image(
@@ -549,19 +622,10 @@ fn paint_backdrop(painter: &Painter, screen: Rect, view: &View, glow: Option<(Po
         draw(cur, alpha);
     }
     painter.rect_filled(screen, 0.0, Color32::from_black_alpha(70));
-
-    if let Some((center, size)) = glow {
-        // Zero alpha in premultiplied colour blends additively.
-        let lit = shade(dominant, 0.55);
-        let additive = Color32::from_rgba_premultiplied(lit.r(), lit.g(), lit.b(), 0);
-        widgets::paint_radial_glow(painter, center, Vec2::splat(size * 1.15), additive);
-    }
-    let inset = Vec2::new(screen.width() * 0.22, screen.height() * 0.3);
-    widgets::paint_vignette(painter, screen, inset, Color32::from_black_alpha(150));
 }
 
 /// Centre-cropped UV rect that shows a square from an image of `size`.
-fn square_uv(size: Vec2) -> Rect {
+pub fn square_uv(size: Vec2) -> Rect {
     if size.x <= 0.0 || size.y <= 0.0 {
         return FULL_UV;
     }
@@ -570,10 +634,11 @@ fn square_uv(size: Vec2) -> Rect {
     Rect::from_center_size(Pos2::new(0.5, 0.5), half * 2.0)
 }
 
-/// Rounded album art with a soft shadow, cross-fading from the previous song's art.
-fn paint_art(painter: &Painter, rect: Rect, view: &View) {
+/// Rounded album art with a soft shadow, cross-fading from the previous song's art. Corners
+/// are rounded by `radius` times the side.
+pub fn paint_art(painter: &Painter, rect: Rect, view: &View, radius: f32) {
     let s = rect.width();
-    let radius = (s * 0.03).min(255.0) as u8;
+    let radius = (s * radius).min(255.0) as u8;
     let shadow = Shadow {
         offset: [0, (s * 0.04).min(127.0) as i8],
         blur: (s * 0.16).min(255.0) as u8,
@@ -603,7 +668,7 @@ fn paint_art(painter: &Painter, rect: Rect, view: &View) {
 }
 
 /// Date and time centred at the top of the window, sized from its shorter side.
-fn paint_clock(painter: &Painter, screen: Rect, view: &View, alpha: f32) {
+pub fn paint_clock(painter: &Painter, screen: Rect, view: &View, alpha: f32) {
     let h = screen.width().min(screen.height());
     let now = view.now;
     let date_pos = Pos2::new(screen.center().x, screen.top() + h * 0.045);
@@ -623,217 +688,9 @@ fn paint_clock(painter: &Painter, screen: Rect, view: &View, alpha: f32) {
     );
 }
 
-/// Opacity of a lyric line `distance` lines after the active one (negative for past lines),
-/// before blending in the active emphasis.
-pub fn line_alpha(distance: isize) -> f32 {
-    match distance {
-        0 => 0.55,
-        1 => 0.5,
-        2 => 0.36,
-        3 => 0.26,
-        d if d > 3 => (0.26 - 0.04 * (d - 3) as f32).max(0.12),
-        -1 => 0.24,
-        -2 => 0.17,
-        _ => 0.12,
-    }
-}
-
-/// Blur strength in `0.0..=1.0` for a line `distance` from the active one; the two lines on
-/// either side stay sharp.
-pub fn line_blur(distance: isize) -> f32 {
-    let beyond = if distance < 0 {
-        -distance - 2
-    } else {
-        distance - 2
-    };
-    (beyond.max(0) as f32 / 3.0).min(1.0)
-}
-
-/// Scroll offset that puts line `active` at the anchor, given each line's top `tops`.
-/// Before the first line the offset leaves room above line 0 for the intro indicator.
-pub fn scroll_target(tops: &[f32], active: Option<usize>, intro_height: f32) -> f32 {
-    match active.and_then(|i| tops.get(i)) {
-        Some(&top) => top,
-        None => -intro_height,
-    }
-}
-
-struct LyricsColumn {
-    rect: Rect,
-    /// Font size of the active line.
-    base: f32,
-    /// Height of the active line, as a fraction from the top of `rect`.
-    anchor: f32,
-    alpha: f32,
-}
-
-fn paint_lyrics_column(ui: &egui::Ui, id: Id, column: &LyricsColumn, view: &View) {
-    let LyricsColumn {
-        rect,
-        base,
-        alpha,
-        anchor: anchor_frac,
-    } = *column;
-    let painter = ui.painter_at(rect.expand2(Vec2::new(rect.width() * 0.05, 0.0)));
-    let anchor = rect.top() + rect.height() * anchor_frac;
-
-    let lyrics = match &view.lyrics {
-        LyricsState::Found(lyrics) => Arc::clone(lyrics),
-        LyricsState::Loading => {
-            let color = with_alpha(Color32::WHITE, 0.45 * alpha);
-            painter.text(
-                Pos2::new(rect.left(), anchor),
-                Align2::LEFT_TOP,
-                "Searching lyrics…",
-                font_light(base * 0.6),
-                color,
-            );
-            return;
-        }
-        LyricsState::NotFound => return,
-    };
-    let fade_band = rect.height() * 0.16;
-    let fade =
-        |top: f32, height: f32| edge_fade(top + height / 2.0, rect.top(), rect.bottom(), fade_band);
-
-    match lyrics.as_ref() {
-        Lyrics::Synced(lines) => {
-            let ctx = ui.ctx();
-            let active = lyrics.current_line(view.player.elapsed());
-            let gap = base * 0.6;
-            let mut tops = Vec::with_capacity(lines.len());
-            let mut laid_out = Vec::with_capacity(lines.len());
-            let mut y = 0.0;
-            for (i, line) in lines.iter().enumerate() {
-                let target = if active == Some(i) { 1.0 } else { 0.0 };
-                let emphasis = ease(ctx.animate_value_with_time(id.with(i), target, LINE_EMPHASIS));
-                let scale = lerp(INACTIVE_SCALE, 1.0, emphasis);
-                let text = match line.text.trim() {
-                    "" => "• • •".to_owned(),
-                    t => t.to_owned(),
-                };
-                let galley = painter.layout(
-                    text,
-                    font_bold(base * scale),
-                    Color32::WHITE,
-                    rect.width() * scale,
-                );
-                tops.push(y);
-                y += galley.size().y + gap;
-                laid_out.push((galley, emphasis));
-            }
-
-            let intro = painter.layout_no_wrap("• • •".into(), font_bold(base), Color32::WHITE);
-            let intro_h = intro.size().y + gap;
-            let offset = smooth_value(
-                ctx,
-                id.with("scroll"),
-                scroll_target(&tops, active, intro_h),
-                SCROLL_RATE,
-            );
-
-            let intro_t =
-                ctx.animate_bool_with_time(id.with("intro"), active.is_none(), LINE_EMPHASIS);
-            if intro_t > 0.0 {
-                let top = anchor - intro_h - offset;
-                let pulse = 0.75 + 0.25 * (ctx.input(|i| i.time) as f32 * 2.5).sin();
-                let a = alpha * intro_t * pulse * fade(top, intro.size().y);
-                painter.galley_with_override_text_color(
-                    Pos2::new(rect.left(), top),
-                    intro,
-                    with_alpha(Color32::WHITE, a),
-                );
-            }
-
-            let pivot = active.map_or(-1, |i| i as isize);
-            for (i, ((galley, emphasis), top)) in laid_out.into_iter().zip(tops).enumerate() {
-                let top = anchor + top - offset;
-                let height = galley.size().y;
-                if top + height < rect.top() || top > rect.bottom() {
-                    continue;
-                }
-                let distance = i as isize - pivot;
-                let a = lerp(line_alpha(distance), 1.0, emphasis) * fade(top, height) * alpha;
-                let blur = line_blur(distance) * (1.0 - emphasis) * base * 0.09;
-                paint_blurred_galley(
-                    &painter,
-                    Pos2::new(rect.left(), top),
-                    &galley,
-                    with_alpha(Color32::WHITE, a),
-                    blur,
-                );
-            }
-        }
-        Lyrics::Plain(lines) => {
-            let gap = base * 0.5;
-            let font = font_bold(base * 0.8);
-            let galleys: Vec<_> = lines
-                .iter()
-                .map(|l| {
-                    painter.layout(
-                        l.trim().to_owned(),
-                        font.clone(),
-                        Color32::WHITE,
-                        rect.width(),
-                    )
-                })
-                .collect();
-            let total: f32 = galleys.iter().map(|g| g.size().y + gap).sum();
-            let target =
-                view.player.progress() * (total - rect.height() * (1.0 - anchor_frac)).max(0.0);
-            let offset = smooth_value(ui.ctx(), id.with("scroll"), target, SCROLL_RATE / 2.0);
-            let mut top = anchor - offset;
-            for galley in galleys {
-                let height = galley.size().y;
-                if top + height >= rect.top() && top <= rect.bottom() {
-                    let a = 0.6 * fade(top, height) * alpha;
-                    painter.galley_with_override_text_color(
-                        Pos2::new(rect.left(), top),
-                        galley,
-                        with_alpha(Color32::WHITE, a),
-                    );
-                }
-                top += height + gap;
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn upcoming_lines_are_brighter_than_past_ones() {
-        assert!(line_alpha(1) > line_alpha(-1));
-        assert!(line_alpha(2) > line_alpha(-2));
-        assert!(line_alpha(1) > line_alpha(2));
-        assert!(line_alpha(2) > line_alpha(3));
-        assert!(line_alpha(3) >= line_alpha(10));
-        assert!(line_alpha(100) > 0.0);
-        assert!(line_alpha(-1) > line_alpha(-5));
-    }
-
-    #[test]
-    fn only_distant_lines_blur() {
-        for d in -2..=2 {
-            assert_eq!(line_blur(d), 0.0, "distance {d}");
-        }
-        assert!(line_blur(3) > 0.0);
-        assert!(line_blur(-3) > 0.0);
-        assert!(line_blur(4) > line_blur(3));
-        assert_eq!(line_blur(50), 1.0);
-        assert_eq!(line_blur(-50), 1.0);
-    }
-
-    #[test]
-    fn scroll_target_follows_active_line() {
-        let tops = [0.0, 40.0, 100.0];
-        assert_eq!(scroll_target(&tops, Some(0), 30.0), 0.0);
-        assert_eq!(scroll_target(&tops, Some(2), 30.0), 100.0);
-        assert_eq!(scroll_target(&tops, None, 30.0), -30.0);
-        assert_eq!(scroll_target(&tops, Some(9), 30.0), -30.0);
-    }
 
     #[test]
     fn orientation_from_size() {

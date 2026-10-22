@@ -90,6 +90,29 @@ pub fn paint_blurred_galley(
     }
 }
 
+/// Soft dark halo behind a galley at `pos`: black copies in two rings within `radius`, adding
+/// up to roughly `alpha` under the glyphs. Does nothing when `alpha` is zero.
+pub fn paint_text_shadow(
+    painter: &Painter,
+    pos: Pos2,
+    galley: &Arc<Galley>,
+    alpha: f32,
+    radius: f32,
+) {
+    const TAPS: usize = 8;
+    if alpha <= 0.0 {
+        return;
+    }
+    let tap = Color32::BLACK.gamma_multiply((alpha / TAPS as f32).clamp(0.0, 1.0));
+    for ring in [0.5, 1.0] {
+        for k in 0..TAPS {
+            let angle = TAU * (k as f32 + ring) / TAPS as f32;
+            let offset = Vec2::angled(angle) * radius * ring;
+            painter.galley_with_override_text_color(pos + offset, galley.clone(), tap);
+        }
+    }
+}
+
 /// Darkens the edges of `rect`, fading to nothing `inset` inside each edge.
 pub fn paint_vignette(painter: &Painter, rect: Rect, inset: Vec2, color: Color32) {
     let inner = rect.shrink2(inset);
