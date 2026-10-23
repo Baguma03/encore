@@ -286,6 +286,8 @@ pub struct SeekBarOutput {
     pub scrubbing: bool,
     /// Fraction to seek to, set when a click or drag ends.
     pub seek: Option<f32>,
+    /// Hover amount in `0.0..=1.0`, eased.
+    pub hover: f32,
 }
 
 /// Fraction of `track` at horizontal position `x`, clamped to `0.0..=1.0`.
@@ -299,6 +301,20 @@ pub fn fraction_at(track: Rect, x: f32) -> f32 {
 /// Thin rounded progress bar that thickens on hover and seeks on click or drag.
 pub fn seek_bar(ui: &egui::Ui, id: Id, track: Rect, progress: f32, enabled: bool) -> SeekBarOutput {
     let pad = Vec2::new(track.height() * 1.5, track.height() * 2.5 + 6.0);
+    let bar = seek_input(ui, id, track, pad, progress, enabled);
+    paint_seek_bar(ui.painter(), track, bar.shown, bar.hover);
+    bar
+}
+
+/// Click and drag handling for a seek bar on `track`, sensitive within `pad` around it.
+pub fn seek_input(
+    ui: &egui::Ui,
+    id: Id,
+    track: Rect,
+    pad: Vec2,
+    progress: f32,
+    enabled: bool,
+) -> SeekBarOutput {
     let sense = if enabled {
         Sense::click_and_drag()
     } else {
@@ -327,12 +343,11 @@ pub fn seek_bar(ui: &egui::Ui, id: Id, track: Rect, progress: f32, enabled: bool
         progress
     };
 
-    paint_seek_bar(ui.painter(), track, shown, hover);
-
     SeekBarOutput {
         shown,
         scrubbing,
         seek: if released { at_pointer } else { None },
+        hover,
     }
 }
 

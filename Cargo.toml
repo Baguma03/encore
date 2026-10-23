@@ -25,3 +25,4 @@ dirs = "6"
 log = "0.4.21"
 simple_logger = { version = "1.11", default-features = false, features = ["colors"] }
 mpd = "0.1.0"
+rustfft = "6"

@@ -184,13 +184,14 @@ pub struct ExportPanel {
     artist_bg_live: HashMap<Layout, bool>,
     artist_bg: bool,
     has_artist_image: bool,
+    visualizer: bool,
     scroll_to: Option<usize>,
 }
 
 impl ExportPanel {
     /// Opens on the marked range if there is one, else on the active lyric line, else on a
-    /// stretch starting at `elapsed`, with `style` and `motion` picked and the artist
-    /// background as `artist_bg` has it for the style's layout.
+    /// stretch starting at `elapsed`, with `style`, `motion` and `visualizer` picked and the
+    /// artist background as `artist_bg` has it for the style's layout.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         song: SongInfo,
@@ -202,6 +203,7 @@ impl ExportPanel {
         style: Style,
         motion: bool,
         artist_bg: HashMap<Layout, bool>,
+        visualizer: bool,
     ) -> Self {
         let mut panel = Self {
             has_artist_image: art::has_artist_image(&song.artist),
@@ -217,6 +219,7 @@ impl ExportPanel {
             audio_found,
             style,
             motion,
+            visualizer,
             scroll_to: None,
         };
         if let Some((start, end)) = marks.range(panel.song.duration) {
@@ -291,6 +294,7 @@ impl ExportPanel {
             style: self.style,
             motion: self.motion,
             artist_bg: self.artist_bg && self.has_artist_image,
+            visualizer: self.visualizer && self.style == Style::Spotify,
         }
     }
 
@@ -384,6 +388,18 @@ impl ExportPanel {
                     .color(Color32::WHITE),
             );
         });
+        if self.style == Style::Spotify {
+            ui.horizontal(|ui| {
+                if switch(ui, &mut self.visualizer, true).clicked() {
+                    self.visualizer = !self.visualizer;
+                }
+                ui.label(
+                    RichText::new("Visualizer")
+                        .font(font_light(15.0))
+                        .color(Color32::WHITE),
+                );
+            });
+        }
         ui.horizontal(|ui| {
             let mut on = self.artist_bg && self.has_artist_image;
             if switch(ui, &mut on, self.has_artist_image).clicked() {
@@ -878,6 +894,7 @@ mod snapshot {
             },
             true,
             HashMap::new(),
+            true,
         );
         panel.pick(6, false);
         let mut formats = vec![Aspect::Portrait, Aspect::Square];
@@ -914,6 +931,7 @@ mod snapshot {
                         now: chrono::Local::now(),
                         capture: false,
                         motion: false,
+                        visualizer: None,
                     };
                     apple::draw(ui, &view);
                     let ctx = ui.ctx().clone();

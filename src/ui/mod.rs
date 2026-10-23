@@ -1,10 +1,14 @@
 pub mod apple;
 pub mod backdrop;
 pub mod export_panel;
+pub mod icons;
 pub mod lyrics_column;
+pub mod scheme;
 pub mod spotify;
 pub mod toasts;
 pub mod vibrant;
+pub mod visualizer;
+pub mod wavy;
 pub mod widgets;
 
 use std::sync::Arc;
@@ -18,6 +22,7 @@ use mpd_display_rs::lyrics::LyricsState;
 
 use crate::art::{ArtTextures, Thumb};
 use crate::player::PlayerState;
+use scheme::Scheme;
 
 pub const FONT_LIGHT: &str = "circular-book";
 pub const FONT_BOLD: &str = "bold";
@@ -29,6 +34,18 @@ pub struct ArtView<'a> {
     pub previous: Option<&'a ArtTextures>,
     /// Opacity of `current` over `previous`; 1.0 once the cross-fade is over.
     pub fade: f32,
+}
+
+impl ArtView<'_> {
+    /// Colours of the current art, cross-fading from the previous song's.
+    pub fn scheme(&self) -> Scheme {
+        let of = |art: Option<&ArtTextures>| art.map_or_else(Scheme::default, |a| a.scheme);
+        let current = of(self.current);
+        match self.previous.filter(|_| self.fade < 1.0) {
+            Some(prev) => prev.scheme.lerp(&current, self.fade),
+            None => current,
+        }
+    }
 }
 
 /// Everything a layout needs to draw one frame. Animations read egui's input time, so a frame
@@ -50,6 +67,9 @@ pub struct View<'a> {
     pub motion: bool,
     /// Use the artist image as the background when the song's artist has one.
     pub artist_bg: bool,
+    /// Latest audio bands for the Spotify layout's visualizer; `None` when it is off or has
+    /// no input.
+    pub visualizer: Option<&'a [f32]>,
 }
 
 /// Registers CircularStd Book as the default proportional font and Bold as the `"bold"` family.

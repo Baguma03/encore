@@ -1,5 +1,6 @@
 mod app;
 mod art;
+mod cava;
 mod config;
 mod export;
 mod player;

@@ -1,4 +1,6 @@
-//! Layout modelled on the Spotify desktop client's fullscreen mode.
+//! Layout modelled on the Spotify desktop client's fullscreen mode, with controls styled after
+//! Quickshell's media widget: a rounded-square play/pause button level with the bottom of the
+//! album art, and a full-width wavy seek bar between previous and next buttons.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,100 +8,161 @@ use std::time::Duration;
 use egui::epaint::{RectShape, Shadow};
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{
-    Align, Align2, Color32, FontId, Galley, Id, Painter, Pos2, Rect, Sense, Stroke, StrokeKind,
-    Vec2,
+    Align, Align2, Color32, CursorIcon, FontId, Galley, Id, Painter, Pos2, Rect, Sense, Stroke,
+    StrokeKind, Vec2,
 };
 use mpd_display_rs::lyrics::{Lyrics, LyricsState};
 
 use super::apple::{self, square_uv};
 use super::backdrop;
-use super::widgets::{ease, lerp, paint_text_shadow};
-use super::{cover_rect, fit_text, fmt_time, font_bold, font_light, with_alpha, View, FULL_UV};
+use super::icons::{paint_icon, Icon};
+use super::scheme::{mix, Scheme};
+use super::visualizer;
+use super::wavy::{self, BarColors, Wavy};
+use super::widgets::{ease, lerp, paint_text_shadow, seek_input};
+use super::{cover_rect, fit_text, font_bold, font_light, with_alpha, View, FULL_UV};
 use crate::art::ArtTextures;
-use crate::player::{Command, SongInfo};
+use crate::player::{Command, PlayState, SongInfo};
 
-const TEXT_BACKGROUND: Color32 = Color32::from_rgb(156, 156, 156);
-const TEXT_FOREGROUND: Color32 = Color32::from_rgb(255, 255, 255);
-const TEXT_MIDGROUND: Color32 = Color32::from_rgb(195, 195, 195);
 const BACKGROUND_IMAGE_TINT: Color32 = Color32::from_rgb(75, 75, 75);
 const BACKGROUND: Color32 = Color32::from_rgb(50, 50, 50);
-const ACCENT: Color32 = Color32::from_rgb(29, 185, 84);
 
 /// Shown in place of an empty lyric line and before the first one.
 const GAP_TEXT: &str = "• • •";
 /// Seconds for the lyrics to scroll by one line.
 const LYRICS_SCROLL: f64 = 0.6;
 /// Opacity of the line above and below the active one.
-const PREVIOUS_ALPHA: f32 = 0.45;
-const NEXT_ALPHA: f32 = 0.55;
+const PREVIOUS_ALPHA: f32 = 0.28;
+const NEXT_ALPHA: f32 = 0.35;
 /// Size of the lines around the active one relative to it.
 const SIDE_SCALE: f32 = 0.8;
 
 /// Song progress from which the Up next card shows.
 const UP_NEXT_AT: f32 = 0.9;
+/// Height around which the lyrics are centred, relative to the screen height.
+const LYRICS_CENTER: f32 = 0.3;
+/// Corner radius of the album art relative to its size.
+const ART_RADIUS: f32 = 0.035;
+
 /// Seconds for the Up next card to slide in or out.
 const UP_NEXT_SLIDE: f32 = 0.5;
 
-/// Progress bar geometry, shared by drawing and hit-testing.
-struct Bar {
-    rect: Rect,
-    hover_band: Rect,
+/// Visualizer opacity and its height at full level, relative to the screen height.
+const VISUALIZER_ALPHA: f32 = 0.35;
+const VISUALIZER_HEIGHT: f32 = 0.18;
+/// Seconds for the seek bar's wave to flatten when paused or rise again.
+const WAVE_FADE: f32 = 0.35;
+/// Seconds for the play button to change colour between playing and paused.
+const BUTTON_MORPH: f32 = 0.2;
+/// Share of an icon's em box left of the skip icons' visible outline.
+const ICON_SIDE_BEARING: f32 = 0.19;
+
+/// Positions of the bottom block, shared by drawing and hit-testing.
+struct Block {
+    art: Rect,
+    /// Top-left corner of the title.
+    title: Pos2,
+    /// Font size of the title; the artist is half of it.
+    title_size: f32,
+    /// Icon size of the previous and next buttons, which are as tall as the controls row.
+    icon: f32,
+    previous: Rect,
+    next: Rect,
+    /// The seek bar's row between the previous and next buttons.
+    bar: Rect,
+    play: Rect,
+    /// Thickness of the seek bar's wave and track.
+    line: f32,
 }
 
-impl Bar {
+impl Block {
     fn new(screen: Rect) -> Self {
         let (w, h) = (screen.width(), screen.height());
-        let width = w * 0.85;
-        let height = h * 0.006;
-        let rect = Rect::from_min_size(
-            screen.min + Vec2::new((w - width) * 0.5, h * 0.9),
-            Vec2::new(width, height),
+        let unit = w.min(h);
+        let art_size = unit / 3.0 * 1.12;
+        let (left, right) = (screen.left() + w / 16.0, screen.right() - w / 16.0);
+        let art = Rect::from_min_size(
+            Pos2::new(left, screen.top() + h / 6.0 * 5.0 - art_size),
+            Vec2::splat(art_size),
         );
-        let margin = h * 0.02;
-        let hover_band = Rect::from_x_y_ranges(
-            screen.x_range(),
-            rect.center().y - margin..=rect.center().y + margin,
+        let title = Pos2::new(art.right() + art_size * 0.1, art.top() + art_size * 0.4);
+
+        let play_size = unit * 0.105;
+        let play = Rect::from_min_max(
+            Pos2::new(right - play_size, art.bottom() - play_size),
+            Pos2::new(right, art.bottom()),
         );
-        Self { rect, hover_band }
+
+        // The controls row runs along the bottom between the side margins, the icons' visible
+        // outlines reaching the margins.
+        let icon = unit * 0.055;
+        let row_y = screen.top() + h * 0.903;
+        let row = Rect::from_x_y_ranges(left..=right, row_y - icon / 2.0..=row_y + icon / 2.0);
+        let previous = Rect::from_min_size(
+            Pos2::new(left - icon * ICON_SIDE_BEARING, row.top()),
+            Vec2::splat(icon),
+        );
+        let next = Rect::from_min_size(
+            Pos2::new(right + icon * ICON_SIDE_BEARING - icon, row.top()),
+            Vec2::splat(icon),
+        );
+        let gap = unit * 0.008;
+        let bar = Rect::from_x_y_ranges(
+            previous.right() + gap..=(next.left() - gap).max(previous.right() + gap),
+            row.y_range(),
+        );
+        Self {
+            art,
+            title,
+            title_size: unit / 9.0 * 0.9,
+            icon,
+            previous,
+            next,
+            bar,
+            play,
+            line: (unit * 0.0095).max(3.0),
+        }
     }
 
-    fn fraction_at(&self, pos: Pos2) -> Option<f32> {
-        (self.hover_band.contains(pos) && self.rect.x_range().contains(pos.x))
-            .then(|| (pos.x - self.rect.left()) / self.rect.width())
+    fn wavy(&self, wave: f32, time: f64, pressed: bool) -> Wavy {
+        Wavy {
+            line: self.line,
+            handle_height: 3.6,
+            wave,
+            time,
+            pressed,
+        }
     }
 }
 
-/// Draws the layout and returns the command a click asked for, if any.
+/// Draws the layout and returns the command a click asked for, if any. Clicks away from the
+/// controls toggle play/pause.
 pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
     let screen = ui.max_rect();
     let painter = ui.painter_at(screen);
-    let bar = Bar::new(screen);
-    if view.capture {
-        paint(ui, &painter, screen, &bar, false, view);
-        return None;
-    }
-    let response = ui.interact(screen, Id::unique("spotify-layout"), Sense::click());
-    let hover = response
-        .hover_pos()
-        .is_some_and(|p| bar.hover_band.contains(p));
-
-    paint(ui, &painter, screen, &bar, hover, view);
-
-    let pos = response
-        .interact_pointer_pos()
-        .filter(|_| response.clicked())?;
-    let duration = view.player.current.as_ref().and_then(|s| s.duration);
-    match (bar.fraction_at(pos), duration) {
-        (Some(fraction), Some(d)) => Some(Command::SeekTo(d.mul_f32(fraction.clamp(0.0, 1.0)))),
-        _ => Some(Command::TogglePause),
-    }
+    let block = Block::new(screen);
+    let background =
+        (!view.capture).then(|| ui.interact(screen, Id::unique("spotify-layout"), Sense::click()));
+    let command = paint(ui, &painter, screen, &block, view);
+    command.or_else(|| {
+        background
+            .filter(|r| r.clicked())
+            .map(|_| Command::TogglePause)
+    })
 }
 
-fn paint(ui: &egui::Ui, painter: &Painter, screen: Rect, bar: &Bar, hover: bool, view: &View) {
+fn paint(
+    ui: &egui::Ui,
+    painter: &Painter,
+    screen: Rect,
+    block: &Block,
+    view: &View,
+) -> Option<Command> {
     let (w, h) = (screen.width(), screen.height());
     let origin = screen.min;
     let player = view.player;
-    let alpha = view.art.fade;
+    let scheme = view.art.scheme();
+    let id = Id::unique("spotify-controls");
 
     painter.rect_filled(screen, 0.0, BACKGROUND);
 
@@ -111,106 +174,63 @@ fn paint(ui: &egui::Ui, painter: &Painter, screen: Rect, bar: &Bar, hover: bool,
         paint_art_backdrop(ui, painter, screen, view);
     }
 
-    // Album art
-    let art_size = w.min(h) / 3.0;
-    let art_rect = Rect::from_min_size(
-        origin + Vec2::new(w / 16.0, h / 6.0 * 5.0 - art_size),
-        Vec2::splat(art_size),
-    );
-    if alpha < 1.0 {
-        if let Some(prev) = view.art.previous {
-            painter.image(
-                prev.cover.id(),
-                art_rect,
-                FULL_UV,
-                with_alpha(Color32::WHITE, 1.0 - alpha),
-            );
-        }
-    }
-    if let Some(cur) = view.art.current {
-        painter.image(
-            cur.cover.id(),
-            art_rect,
-            FULL_UV,
-            with_alpha(Color32::WHITE, alpha),
+    // Visualizer along the bottom edge, behind the art and controls.
+    let level = visualizer::level(ui, id, view);
+    if let Some(bands) = view.visualizer.filter(|_| level > 0.0) {
+        // A square-root curve lifts quiet passages so the wave stays visible.
+        let bands: Vec<f32> = bands
+            .iter()
+            .map(|v| (v / visualizer::MAX_VALUE).clamp(0.0, 1.0).sqrt() * visualizer::MAX_VALUE)
+            .collect();
+        let rect = Rect::from_x_y_ranges(
+            screen.x_range(),
+            screen.bottom() - h * VISUALIZER_HEIGHT..=screen.bottom(),
+        );
+        visualizer::paint(
+            painter,
+            rect,
+            0.0,
+            &bands,
+            level,
+            scheme.primary,
+            VISUALIZER_ALPHA,
+            h * 0.01,
         );
     }
 
-    // Title and artist
+    // Album art
+    let art_rect = block.art;
+    apple::paint_art(painter, art_rect, view, ART_RADIUS);
+
+    // Title and artist beside the art, clear of the play button.
     let (title, artist) = match &player.current {
         Some(song) => (song.title.as_str(), song.artist.as_str()),
         None => ("Nothing playing", ""),
     };
-    let title_pos = Pos2::new(
-        art_rect.left() + art_size * 1.1,
-        art_rect.top() + art_size * 0.4,
-    );
-    let available = (screen.right() - title_pos.x) * 0.97;
-    let title_size = w.min(h) / 9.0;
-    let title_text = fit_text(
-        painter,
-        title,
-        font_bold,
-        title_size,
-        available,
-        TEXT_FOREGROUND,
-    );
-    let artist_pos = title_pos + Vec2::new(0.0, title_text.size().y + art_size * 0.05);
-    painter.galley(title_pos, title_text, TEXT_FOREGROUND);
-    let artist_text = fit_text(
-        painter,
-        artist,
-        font_bold,
-        title_size / 2.0,
-        available,
-        TEXT_MIDGROUND,
-    );
-    painter.galley(artist_pos, artist_text, TEXT_MIDGROUND);
-
-    // Progress bar
-    let bar_h = bar.rect.height();
-    let radius = bar_h / 2.1;
-    let progress = player.progress();
-    painter.rect_filled(bar.rect, radius, TEXT_BACKGROUND.gamma_multiply(0.5));
-    let filled = Rect::from_min_size(bar.rect.min, Vec2::new(bar.rect.width() * progress, bar_h));
-    painter.rect_filled(filled, radius, if hover { ACCENT } else { TEXT_FOREGROUND });
-
-    let duration = player
-        .current
-        .as_ref()
-        .and_then(|s| s.duration)
-        .unwrap_or_default();
-    let elapsed_text = painter.layout_no_wrap(
-        fmt_time(player.elapsed()),
-        font_light(bar_h * 3.0),
-        TEXT_FOREGROUND,
-    );
-    let text_y = bar.rect.top() - elapsed_text.size().y / 3.1;
-    let elapsed_pos = Pos2::new(
-        bar.rect.left() - elapsed_text.size().x - bar_h * 1.5,
-        text_y,
-    );
-    painter.galley(elapsed_pos, elapsed_text, TEXT_FOREGROUND);
-    let duration_text =
-        painter.layout_no_wrap(fmt_time(duration), font_light(bar_h * 3.0), TEXT_FOREGROUND);
-    painter.galley(
-        Pos2::new(bar.rect.right() + bar_h * 1.5, text_y),
-        duration_text,
-        TEXT_FOREGROUND,
-    );
-
-    if hover {
-        painter.circle_filled(
-            Pos2::new(filled.right(), bar.rect.center().y),
-            bar_h,
-            TEXT_FOREGROUND,
-        );
+    let gap = w.min(h) * 0.03;
+    let full = block.play.right() - block.title.x;
+    let beside_button = block.play.left() - gap - block.title.x;
+    let fit = |text, size, width, color| fit_text(painter, text, font_bold, size, width, color);
+    let mut title_text = fit(title, block.title_size, full, scheme.text);
+    if block.title.y + title_text.size().y > block.play.top() - gap {
+        title_text = fit(title, block.title_size, beside_button, scheme.text);
     }
+    let artist_pos = block.title + Vec2::new(0.0, title_text.size().y + art_rect.height() * 0.05);
+    painter.galley(block.title, title_text, scheme.text);
+    let artist_text = fit(
+        artist,
+        block.title_size / 2.0,
+        beside_button,
+        scheme.subtext,
+    );
+    painter.galley(artist_pos, artist_text, scheme.subtext);
+
+    let command = paint_controls(ui, painter, block, view, &scheme, id);
 
     // Up next card in the top-right corner, in the clock's place.
     let corner = Pos2::new(screen.right() - w / 30.0, origin.y + h / 20.0);
     let card = UpNextCard::new(screen);
-    let card_t = paint_up_next(ui, painter, &card, corner, view);
+    let card_t = paint_up_next(ui, painter, &card, corner, view, &scheme);
 
     let clock_font = font_bold(h / 22.0);
     if view.show_clock && !view.capture && card_t < 1.0 {
@@ -219,26 +239,162 @@ fn paint(ui: &egui::Ui, painter: &Painter, screen: Rect, bar: &Bar, hover: bool,
             Align2::RIGHT_TOP,
             view.now.format("%H:%M").to_string(),
             clock_font.clone(),
-            with_alpha(TEXT_FOREGROUND, 1.0 - card_t),
+            with_alpha(scheme.text, 1.0 - card_t),
         );
     }
 
-    // Lyrics between the clock and the album art, narrow enough to clear the card.
+    // Lyrics centred over the space right of the art, in the upper part of the screen. While
+    // the Up next card shows they move down to clear it, leaving room for the dimmed line over
+    // a wrapped active one.
     let clock_h = painter
         .layout_no_wrap("0".into(), clock_font, Color32::WHITE)
         .size()
         .y;
-    let top = corner.y + clock_h + h * 0.03;
-    let bottom = art_rect.top() - h * 0.04;
-    let side = card.width + (screen.right() - corner.x) + w.min(h) * 0.03;
-    let width = (w * 0.6).min(w - 2.0 * side);
+    let top = corner.y + clock_h + h * 0.06;
+    let bottom = art_rect.top() - h * 0.03;
+    let below_card = (corner.y + card.height(painter) + h * 0.06 + bottom) / 2.0;
+    let center =
+        lerp(origin.y + h * LYRICS_CENTER, below_card, ease(card_t)).clamp(top, bottom.max(top));
+    let width = (screen.right() - w / 16.0 - art_rect.right()) * 0.9;
     if bottom > top && width > 0.0 {
         let rect = Rect::from_center_size(
-            Pos2::new(screen.center().x, (top + bottom) / 2.0),
+            Pos2::new((art_rect.right() + screen.right() - w / 16.0) / 2.0, center),
             Vec2::new(width, bottom - top),
         );
-        paint_lyrics(ui, painter, rect, (h / 21.5).min(w / 24.0), view);
+        let base = (h / 21.5).min(w / 24.0) * 0.82;
+        paint_lyrics(ui, painter, rect, base, view, scheme.text);
     }
+    command
+}
+
+/// The previous and next buttons either side of the wavy seek bar, and the play/pause
+/// button. Returns the command a click asked for; decoration only when capturing.
+fn paint_controls(
+    ui: &egui::Ui,
+    painter: &Painter,
+    block: &Block,
+    view: &View,
+    scheme: &Scheme,
+    id: Id,
+) -> Option<Command> {
+    let player = view.player;
+    let playing = player.state == PlayState::Playing;
+    let ctx = ui.ctx();
+    let duration = player
+        .current
+        .as_ref()
+        .and_then(|s| s.duration)
+        .unwrap_or_default();
+    let mut command = None;
+
+    // Seek bar
+    let wave = ease(ctx.animate_bool_with_time(id.with("wave"), playing, WAVE_FADE));
+    let mut style = block.wavy(wave, ui.input(|i| i.time), false);
+    let range = style.range(block.bar);
+    let progress = player.progress();
+    let shown = if view.capture {
+        progress
+    } else {
+        let pad = Vec2::new(0.0, block.icon * 0.2);
+        let bar = seek_input(
+            ui,
+            id.with("seek"),
+            range,
+            pad,
+            progress,
+            !duration.is_zero(),
+        );
+        style.pressed = bar.scrubbing;
+        if let Some(fraction) = bar.seek {
+            command = Some(Command::SeekTo(duration.mul_f32(fraction)));
+        }
+        bar.shown
+    };
+    let colors = BarColors {
+        highlight: scheme.primary,
+        track: scheme.secondary_container,
+        handle: scheme.primary,
+        dot: scheme.on_secondary_container,
+    };
+    wavy::paint(painter, block.bar, shown, &style, &colors);
+
+    // Previous and next
+    for (icon, rect, cmd, key) in [
+        (
+            Icon::Previous,
+            block.previous,
+            Command::Previous,
+            "previous",
+        ),
+        (Icon::Next, block.next, Command::Next, "next"),
+    ] {
+        let hover = hover_button(ui, view, rect, id.with(key), cmd, &mut command);
+        if hover > 0.0 {
+            painter.circle_filled(
+                rect.center(),
+                rect.width() * 0.6,
+                with_alpha(scheme.secondary_container, hover * 0.8),
+            );
+        }
+        paint_icon(
+            painter,
+            icon,
+            rect.center(),
+            block.icon,
+            scheme.on_secondary_container,
+        );
+    }
+
+    // Play/pause: the primary colour while playing, the secondary container while paused.
+    let morph = ctx.animate_bool_with_time(id.with("play-morph"), playing, BUTTON_MORPH);
+    let hover = hover_button(
+        ui,
+        view,
+        block.play,
+        id.with("play"),
+        Command::TogglePause,
+        &mut command,
+    );
+    let fill = scheme
+        .secondary_container
+        .lerp_to_gamma(scheme.primary, morph)
+        .lerp_to_gamma(Color32::WHITE, 0.1 * hover);
+    let icon_color = scheme
+        .on_secondary_container
+        .lerp_to_gamma(scheme.on_primary, morph);
+    painter.rect_filled(block.play, block.play.width() * 0.36, fill);
+    let icon = if playing { Icon::Pause } else { Icon::Play };
+    paint_icon(
+        painter,
+        icon,
+        block.play.center(),
+        block.play.width() * 0.5,
+        icon_color,
+    );
+    command
+}
+
+/// A clickable area that sets `command` to `cmd` when clicked. Returns its eased hover amount;
+/// 0 when capturing.
+fn hover_button(
+    ui: &egui::Ui,
+    view: &View,
+    rect: Rect,
+    id: Id,
+    cmd: Command,
+    command: &mut Option<Command>,
+) -> f32 {
+    if view.capture {
+        return 0.0;
+    }
+    let response = ui
+        .interact(rect, id, Sense::click())
+        .on_hover_cursor(CursorIcon::PointingHand);
+    if response.clicked() {
+        *command = Some(cmd);
+    }
+    ui.ctx()
+        .animate_bool_with_time(id.with("hover"), response.hovered(), 0.15)
 }
 
 /// Blurred album art, moving when motion is on, darkened to the artist image's level.
@@ -358,8 +514,15 @@ fn centered(painter: &Painter, text: &str, font: FontId, width: f32) -> Arc<Gall
 }
 
 /// Three centred lyric lines: the previous one dimmed above the active one and the next one
-/// below, scrolling up as the song moves on. `base` is the active line's font size.
-fn paint_lyrics(ui: &egui::Ui, painter: &Painter, rect: Rect, base: f32, view: &View) {
+/// below, scrolling up as the song moves on, in `color`. `base` is the active line's font size.
+fn paint_lyrics(
+    ui: &egui::Ui,
+    painter: &Painter,
+    rect: Rect,
+    base: f32,
+    view: &View,
+    color: Color32,
+) {
     let (Some(song), LyricsState::Found(lyrics)) = (&view.player.current, &view.lyrics) else {
         return;
     };
@@ -433,7 +596,7 @@ fn paint_lyrics(ui: &egui::Ui, painter: &Painter, rect: Rect, base: f32, view: &
         }
         let pos = Pos2::new(rect.center().x, anchor + top - here);
         paint_text_shadow(painter, pos, &galley, a * 0.6, base * 0.12);
-        painter.galley_with_override_text_color(pos, galley, with_alpha(Color32::WHITE, a));
+        painter.galley_with_override_text_color(pos, galley, with_alpha(color, a));
     }
 }
 
@@ -472,6 +635,32 @@ impl UpNextCard {
             unit,
         }
     }
+
+    fn label(&self, painter: &Painter) -> Arc<Galley> {
+        painter.layout_job(LayoutJob::single_section(
+            "UP NEXT".to_owned(),
+            TextFormat {
+                font_id: font_bold(self.unit * 0.016),
+                extra_letter_spacing: self.unit * 0.0025,
+                color: Color32::WHITE,
+                ..Default::default()
+            },
+        ))
+    }
+
+    fn bar_height(&self) -> f32 {
+        (self.unit * 0.004).max(2.0)
+    }
+
+    fn height(&self, painter: &Painter) -> f32 {
+        let pad = self.pad;
+        pad + self.label(painter).size().y
+            + pad * 0.6
+            + self.thumb
+            + pad * 0.9
+            + self.bar_height()
+            + pad * 0.8
+    }
 }
 
 /// Lays out `text` on one row, ellipsized to `width`.
@@ -494,6 +683,7 @@ fn paint_up_next(
     card: &UpNextCard,
     corner: Pos2,
     view: &View,
+    scheme: &Scheme,
 ) -> f32 {
     let player = view.player;
     let progress = player.progress();
@@ -523,17 +713,9 @@ fn paint_up_next(
         thumb,
         unit,
     } = *card;
-    let label = painter.layout_job(LayoutJob::single_section(
-        "UP NEXT".to_owned(),
-        TextFormat {
-            font_id: font_bold(unit * 0.016),
-            extra_letter_spacing: unit * 0.0025,
-            color: Color32::WHITE,
-            ..Default::default()
-        },
-    ));
-    let bar_h = (unit * 0.004).max(2.0);
-    let height = pad + label.size().y + pad * 0.6 + thumb + pad * 0.9 + bar_h + pad * 0.8;
+    let label = card.label(painter);
+    let bar_h = card.bar_height();
+    let height = card.height(painter);
     let offset = slide_offset(t, width + (painter.clip_rect().right() - corner.x));
     let rect = Rect::from_min_size(
         Pos2::new(corner.x - width + offset, corner.y),
@@ -563,7 +745,7 @@ fn paint_up_next(
     painter.galley_with_override_text_color(
         Pos2::new(rect.left() + pad, y),
         label,
-        with_alpha(Color32::WHITE, 0.55),
+        with_alpha(scheme.text, 0.55),
     );
     y += label_h + pad * 0.6;
 
@@ -599,11 +781,11 @@ fn paint_up_next(
     let text_h = title.size().y + gap + artist.size().y;
     let text_top = thumb_rect.center().y - text_h / 2.0;
     let artist_top = text_top + title.size().y + gap;
-    painter.galley_with_override_text_color(Pos2::new(text_x, text_top), title, Color32::WHITE);
+    painter.galley_with_override_text_color(Pos2::new(text_x, text_top), title, scheme.text);
     painter.galley_with_override_text_color(
         Pos2::new(text_x, artist_top),
         artist,
-        with_alpha(Color32::WHITE, 0.65),
+        with_alpha(scheme.text, 0.65),
     );
     y = thumb_rect.bottom() + pad * 0.9;
 
@@ -614,7 +796,9 @@ fn paint_up_next(
     let bar_radius = (bar_h / 2.0) as u8;
     painter.rect_filled(track, bar_radius, Color32::from_white_alpha(38));
     let fill = Rect::from_min_size(track.min, Vec2::new(track.width() * countdown, bar_h));
-    painter.rect_filled(fill, bar_radius, with_alpha(Color32::WHITE, 0.85));
+    // A light shade of the art's primary colour.
+    let fill_color = mix(scheme.primary, scheme.text, 0.5);
+    painter.rect_filled(fill, bar_radius, with_alpha(fill_color, 0.85));
     t
 }
 
@@ -695,6 +879,23 @@ mod tests {
         let back = s.retarget(0.0, 50.0);
         assert_eq!(back.from, 1.0);
         assert_eq!(s.retarget(3.0, 50.0), s);
+    }
+
+    #[test]
+    fn controls_line_up_with_the_art() {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1920.0, 1080.0));
+        let b = Block::new(screen);
+        // A little larger than a third of the shorter side.
+        assert!(b.art.width() > 1080.0 / 3.0 * 1.1 && b.art.width() < 1080.0 / 3.0 * 1.15);
+        assert_eq!(b.play.bottom(), b.art.bottom());
+        assert!(b.title.x > b.art.right() && b.title.y > b.art.top());
+        // The controls row runs below the art across the screen, its ends at the margins.
+        assert!(b.bar.top() > b.art.bottom());
+        assert!(b.previous.right() < b.bar.left());
+        assert!(b.bar.right() < b.next.left());
+        assert!(b.next.right() > b.play.right());
+        assert!(b.previous.left() < b.art.left());
+        assert!(b.bar.width() > 1920.0 * 0.8);
     }
 
     #[test]

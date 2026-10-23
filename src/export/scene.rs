@@ -105,6 +105,7 @@ impl Scene for LayoutScene {
             capture: true,
             motion: self.motion,
             artist_bg: self.artist_bg,
+            visualizer: frame.visualizer,
         };
         match self.style {
             Style::Dark => apple::draw(ui, &view),

@@ -13,6 +13,7 @@ use log::{debug, warn};
 
 use crate::config::Config;
 use crate::player::SongInfo;
+use crate::ui::scheme::Scheme;
 
 const BACKUP_ART_PATH: &str = "./assets/art_backup";
 const ARTISTS_DIR: &str = "./artists";
@@ -56,6 +57,8 @@ pub struct ArtTextures {
     pub palette: Vec<Color32>,
     /// Mean relative luminance of the cover, `0.0..=1.0`.
     pub brightness: f32,
+    /// Colours adapted to the cover.
+    pub scheme: Scheme,
 }
 
 /// Decoded images for one song, ready to upload as textures.
@@ -74,6 +77,8 @@ pub struct ArtImages {
     pub palette: Vec<Color32>,
     /// Mean relative luminance of the cover, `0.0..=1.0`.
     pub brightness: f32,
+    /// Colours adapted to the cover.
+    pub scheme: Scheme,
 }
 
 /// Small cover of the song queued after the current one.
@@ -88,7 +93,7 @@ enum Request {
 }
 
 enum Loaded {
-    Art(String, ArtImages),
+    Art(String, Box<ArtImages>),
     Thumb(String, ColorImage),
 }
 
@@ -128,7 +133,7 @@ impl ArtLoader {
                             Request::Art { song_file, artist } => {
                                 let images = worker.load(&song_file, &artist);
                                 debug!("art ready for {song_file}");
-                                Loaded::Art(song_file, images)
+                                Loaded::Art(song_file, Box::new(images))
                             }
                             Request::Thumb { song_file } => {
                                 let image = worker.thumb(&song_file);
@@ -199,7 +204,7 @@ impl ArtLoader {
                     if self.requested.borrow().as_deref() != Some(file.as_str()) {
                         continue;
                     }
-                    let textures = upload(ctx, &file, images);
+                    let textures = upload(ctx, &file, *images);
                     self.previous = self.current.replace(textures);
                     self.changed_at = Some(Instant::now());
                     changed = true;
@@ -258,6 +263,7 @@ pub fn upload(ctx: &egui::Context, song_file: &str, images: ArtImages) -> ArtTex
         dominant: images.dominant,
         palette: images.palette,
         brightness: images.brightness,
+        scheme: images.scheme,
         song_file: song_file.to_owned(),
     }
 }
@@ -334,6 +340,7 @@ impl Worker {
             motion: to_color_image(&motion(&small)),
             dominant: dominant_color(&small),
             brightness: brightness(&small),
+            scheme: Scheme::from_art(average_color(&small)),
             palette: palette(&imageops::thumbnail(&small, PALETTE_SAMPLE, PALETTE_SAMPLE)),
             cover: to_color_image(&cover.to_rgba8()),
             artist_bg: artist.map(|img| {
@@ -458,19 +465,31 @@ fn backdrop(small: &RgbaImage) -> RgbaImage {
     large
 }
 
-fn dominant_color(small: &RgbaImage) -> Color32 {
+/// Mean colour of an image weighted by opacity, like scaling it down to one pixel.
+fn mean_rgb(img: &RgbaImage) -> Option<[f32; 3]> {
     let (mut sum, mut weight) = ([0.0f32; 3], 0.0f32);
-    for px in small.pixels() {
+    for px in img.pixels() {
         let a = px.0[3] as f32 / 255.0;
         for (s, c) in sum.iter_mut().zip(px.0) {
             *s += c as f32 * a;
         }
         weight += a;
     }
-    if weight <= 0.0 {
+    (weight > 0.0).then(|| sum.map(|s| s / weight))
+}
+
+/// Mean colour of the cover; mid grey for a fully transparent one.
+fn average_color(small: &RgbaImage) -> Color32 {
+    let [r, g, b] = mean_rgb(small)
+        .unwrap_or([128.0; 3])
+        .map(|c| c.round() as u8);
+    Color32::from_rgb(r, g, b)
+}
+
+fn dominant_color(small: &RgbaImage) -> Color32 {
+    let Some(avg) = mean_rgb(small) else {
         return Color32::from_gray(50);
-    }
-    let avg = sum.map(|s| s / weight);
+    };
     let gray = (avg[0] + avg[1] + avg[2]) / 3.0;
     let [r, g, b] = avg.map(|c| (gray + (c - gray) * DOMINANT_SATURATION).clamp(0.0, 255.0) as u8);
     Color32::from_rgb(r, g, b)
@@ -640,6 +659,14 @@ mod tests {
     fn dominant_of_solid_image() {
         let img = RgbaImage::from_pixel(4, 4, [100, 100, 100, 255].into());
         assert_eq!(dominant_color(&img), Color32::from_rgb(100, 100, 100));
+        let halves = RgbaImage::from_fn(4, 4, |x, _| {
+            if x < 2 {
+                [200, 0, 0, 255].into()
+            } else {
+                [0, 0, 100, 255].into()
+            }
+        });
+        assert_eq!(average_color(&halves), Color32::from_rgb(100, 0, 50));
     }
 
     #[test]
