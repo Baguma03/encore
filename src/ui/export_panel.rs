@@ -9,7 +9,7 @@ use egui::{
     Align, Align2, Color32, CursorIcon, Frame, Id, Margin, Modal, Pos2, Rect, Response, RichText,
     ScrollArea, Sense, Stroke, Ui, Vec2,
 };
-use mpd_display_rs::lyrics::{LyricLine, Lyrics, LyricsState};
+use encore::lyrics::{LyricLine, Lyrics, LyricsState};
 
 use super::{font_bold, font_light, with_alpha};
 use crate::art;
@@ -1471,7 +1471,7 @@ mod tests {
 mod snapshot {
     use std::sync::Arc;
 
-    use mpd_display_rs::lyrics::lrc::parse_lrc;
+    use encore::lyrics::lrc::parse_lrc;
 
     use super::*;
     use crate::export::render::Renderer;
@@ -1480,13 +1480,13 @@ mod snapshot {
     use crate::ui::{apple, ArtView, View};
 
     /// Renders the panel and toasts over the Apple layout to the PNG named by
-    /// `EXPORT_PANEL_SNAPSHOT`, or `export-panel.png` in the temp folder.
-    /// `EXPORT_PANEL_STYLE=spotify` picks the Spotify style instead of Vibrant, and
-    /// `EXPORT_PANEL_LYRICS=none` shows a song without lyrics.
+    /// `ENCORE_EXPORT_PANEL_SNAPSHOT`, or `export-panel.png` in the temp folder.
+    /// `ENCORE_EXPORT_PANEL_STYLE=spotify` picks the Spotify style instead of Vibrant, and
+    /// `ENCORE_EXPORT_PANEL_LYRICS=none` shows a song without lyrics.
     #[test]
     #[ignore = "needs a GPU"]
     fn panel_snapshot() {
-        let out = std::env::var_os("EXPORT_PANEL_SNAPSHOT")
+        let out = std::env::var_os("ENCORE_EXPORT_PANEL_SNAPSHOT")
             .map_or_else(|| std::env::temp_dir().join("export-panel.png"), Into::into);
         let song = SongInfo {
             id: 1,
@@ -1507,7 +1507,7 @@ mod snapshot {
                 format!("[00:{:02}.00]{text}\n", 20 + i * 3)
             })
             .collect();
-        let lyrics = match std::env::var("EXPORT_PANEL_LYRICS").as_deref() {
+        let lyrics = match std::env::var("ENCORE_EXPORT_PANEL_LYRICS").as_deref() {
             Ok("none") => LyricsState::NotFound,
             _ => LyricsState::Found(Arc::new(parse_lrc(&lrc))),
         };
@@ -1519,7 +1519,7 @@ mod snapshot {
             Marks::default(),
             false,
             LiveLook {
-                style: match std::env::var("EXPORT_PANEL_STYLE").as_deref() {
+                style: match std::env::var("ENCORE_EXPORT_PANEL_STYLE").as_deref() {
                     Ok("spotify") => Style::Spotify,
                     _ => Style::Vibrant,
                 },

@@ -11,7 +11,7 @@ use super::{Lyrics, LyricsConfig, SongKey};
 
 const LRCLIB_BASE: &str = "https://lrclib.net/api";
 const USER_AGENT: &str = concat!(
-    "mpd-display-rs/",
+    "encore/",
     env!("CARGO_PKG_VERSION"),
     " (https://github.com/allylikesu/mpd-display-rs)"
 );
@@ -427,7 +427,7 @@ pub(crate) mod tests {
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "mpd-display-rs-test-{tag}-{}-{nanos}-{}",
+            "encore-test-{tag}-{}-{nanos}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));

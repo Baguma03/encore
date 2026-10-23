@@ -1030,6 +1030,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "encore"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "eframe",
+ "egui",
+ "egui-wgpu",
+ "image",
+ "log",
+ "mpd",
+ "pollster",
+ "serde",
+ "serde_json",
+ "simple_logger",
+ "ureq",
+ "wgpu",
+]
+
+[[package]]
 name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2044,26 +2064,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e12cace5746cb0aa78faa6cd2caec9f9c01882fc0e6b54d34685a2d3303ea34"
 dependencies = [
  "bufstream",
-]
-
-[[package]]
-name = "mpd-display-rs"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs",
- "eframe",
- "egui",
- "egui-wgpu",
- "image",
- "log",
- "mpd",
- "pollster",
- "serde",
- "serde_json",
- "simple_logger",
- "ureq",
- "wgpu",
 ]
 
 [[package]]

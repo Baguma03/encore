@@ -17,7 +17,7 @@ use egui::{
     Color32, FontData, FontDefinitions, FontFamily, FontId, Galley, Painter, Pos2, Rect, Vec2,
 };
 
-use mpd_display_rs::lyrics::LyricsState;
+use encore::lyrics::LyricsState;
 
 use crate::art::{ArtTextures, Thumb};
 use crate::config::{LyricsAlign, LyricsFlow};

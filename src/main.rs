@@ -15,7 +15,7 @@ fn main() {
         Some(_) => simple_logger::SimpleLogger::new().env(),
         None => simple_logger::SimpleLogger::new()
             .with_level(LevelFilter::Warn)
-            .with_module_level("mpd_display_rs", LevelFilter::Info),
+            .with_module_level("encore", LevelFilter::Info),
     };
     if let Err(e) = logger.init() {
         eprintln!("failed to initialise logger: {e}");
@@ -32,14 +32,14 @@ fn main() {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("MPD Display")
-            .with_app_id("mpd-display-rs")
+            .with_title("Encore")
+            .with_app_id("encore")
             .with_inner_size([1280.0, 720.0])
             .with_fullscreen(true),
         ..Default::default()
     };
     let result = eframe::run_native(
-        "MPD Display",
+        "Encore",
         options,
         Box::new(|cc| Ok(Box::new(app::App::new(cc, config)))),
     );

@@ -1,4 +1,4 @@
-# mpd-display-rs: A Spotify/Apple Music-like graphical display for MPD
+# Encore: A Spotify/Apple Music-like graphical display for MPD
 
 Note that this is not a full MPD client, as it only *displays* data (plus basic playback controls).
 
@@ -17,7 +17,7 @@ This is a replacement for my old [mpd-display](https://github.com/allylikesu/mpd
 Only tested on Linux. Requires MPC (used to fetch album art). `ffmpeg` (with libx264 and aac) is optional and only needed for [exporting lyric clips](#exporting-lyric-clips).
 
 ## Layouts
-Three layouts are available. `l` cycles through them at runtime (Apple → Vibrant → Spotify), and `MPD_DISPLAY_LAYOUT` chooses the starting one.
+Three layouts are available. `l` cycles through them at runtime (Apple → Vibrant → Spotify), and `ENCORE_LAYOUT` chooses the starting one.
 
 - **Apple Music-style** (default): a blurred album art backdrop, rounded album art with the title, "Artist — Album" and a progress bar below it, clickable previous/play-pause/next buttons, a seekable progress bar, and a time-synced lyrics column on the right. The active lyric line is highlighted, the column scrolls smoothly, and lines far from the active one fade out. An optional date/clock overlay can be toggled with `t`.
 - **Vibrant**: modelled on Apple Music's colourful lyrics view. The backdrop is bright: enlarged, heavily blurred copies of the album art with a faint gradient of its main colours over them, cross-fading between songs. Light covers stay light; a soft dark halo behind the text, and a mild wash on very light art, keep white text readable. Square album art sits on the left with the elapsed and remaining time, a thin seekable progress bar, and the title and "Artist — Album" centred beneath it, and the time-synced lyrics are on the right. There are no transport buttons; clicking anywhere toggles play/pause. Tall and square windows stack the art above the lyrics. The `t` clock overlay works here too.
@@ -26,8 +26,8 @@ Three layouts are available. `l` cycles through them at runtime (Apple → Vibra
   - **Classic**: three lines, the previous one faint above the active one and the next one faint below it. On each new line they scroll up smoothly, the outgoing line fading out at the top and the incoming one fading in at the bottom.
 
   `• • •` stands for the time before the first line and for instrumental gaps. Unsynced lyrics use the classic flow and advance through the song at an even pace. For the last 10% of a song, the next song slides into the top-right corner: its rounded cover with its title and artist beside it, and a thin bar below counting down the rest of the current song, drawn straight over the backdrop. While it shows, lyrics that reach under that corner move down to clear it. The `t` clock sits in the same corner while the next song is hidden.
-- **Moving backdrop**: enlarged, blurred copies of the album art drift across the screen, turn, swell and blend into each other, like Apple Music's animated artwork. It keeps moving while playback is paused. Toggle it with `b`, or start without it with `MPD_DISPLAY_MOTION=off`; with it off, the backdrop is still.
-- **Backgrounds**: `a` toggles the artist background for the current layout. When it is on and `artists/` has an image for the song's artist, the layout uses that image: tinted dark in the Spotify and Apple layouts with a vignette in the Apple one, and lighter in the Vibrant layout, with a halo behind the text. With motion on, the image slowly pans and zooms. When it is off, or there is no image, each layout uses its own backdrop: blurred album art for Spotify (moving when motion is on, darkened to match), dark blurred art for Apple and the colourful art for Vibrant. The setting is kept per layout for the session; it starts on for Spotify and off for Apple and Vibrant, and `MPD_DISPLAY_ARTIST_BG` sets the starting value for all of them.
+- **Moving backdrop**: enlarged, blurred copies of the album art drift across the screen, turn, swell and blend into each other, like Apple Music's animated artwork. It keeps moving while playback is paused. Toggle it with `b`, or start without it with `ENCORE_MOTION=off`; with it off, the backdrop is still.
+- **Backgrounds**: `a` toggles the artist background for the current layout. When it is on and `artists/` has an image for the song's artist, the layout uses that image: tinted dark in the Spotify and Apple layouts with a vignette in the Apple one, and lighter in the Vibrant layout, with a halo behind the text. With motion on, the image slowly pans and zooms. When it is off, or there is no image, each layout uses its own backdrop: blurred album art for Spotify (moving when motion is on, darkened to match), dark blurred art for Apple and the colourful art for Vibrant. The setting is kept per layout for the session; it starts on for Spotify and off for Apple and Vibrant, and `ENCORE_ARTIST_BG` sets the starting value for all of them.
 
 ### Album colours
 Every layout takes its colours from the album art. The cover's average colour is blended into a small Material 3 dark scheme (primary, on-primary, secondary container and text colours), the same way the Quickshell media widget adapts its colours. The main text is a light pastel of the cover's hue, still the brightest text on screen; grey covers give near-white text.
@@ -36,7 +36,7 @@ Every layout takes its colours from the album art. The cover's average colour is
 - **Apple**: the title, active lyric line, filled part of the progress bar and all buttons use the pastel; "Artist — Album", the other lyric lines and the times use a slightly deeper shade of it, at their usual opacity.
 - **Vibrant**: as in the Apple layout, but the pastel is mixed towards white until the text keeps at least 80% of white text's contrast against the bright backdrop (70% for the fainter lines).
 
-Every colour keeps a minimum contrast against its backdrop, so light, dark and very saturated covers stay readable, and the colours cross-fade along with the art when the song changes. `k` turns album colours off: the Apple and Vibrant layouts are then plain white, and the Spotify layout uses a neutral grey scheme with white text. `MPD_DISPLAY_TINT=off` starts with them off.
+Every colour keeps a minimum contrast against its backdrop, so light, dark and very saturated covers stay readable, and the colours cross-fade along with the art when the song changes. `k` turns album colours off: the Apple and Vibrant layouts are then plain white, and the Spotify layout uses a neutral grey scheme with white text. `ENCORE_TINT=off` starts with them off.
 
 ## Features
 - Toggleable fullscreen with the `f` or `F11` key
@@ -93,25 +93,29 @@ Clone the repo, run `cargo build --release`, then create a startup script to exe
 #!/usr/bin/env bash
 cd <PATH TO CLONED REPO> || exit 1
 
-target/release/mpd-display-rs
+target/release/encore
 ```
 
+`cargo install --path .` installs the `encore` binary instead. The window's class (app id) is `encore`, for use in compositor window rules.
+
 ### Environment variables
+The `ENCORE_*` variables also accept their older `MPD_DISPLAY_*` names (for example `MPD_DISPLAY_LAYOUT`) when the `ENCORE_*` variable is unset.
+
 | Variable | Description |
 | --- | --- |
 | `MPD_HOST` | MPD server host. Defaults to `localhost`. If your server has a password, format it as `pass@ip`. |
 | `MPD_PORT` | MPD server port. Defaults to `6600`. |
 | `MPD_MUSIC_DIR` | Your MPD music directory. Enables sidecar lyrics files next to the audio files and audio in exported clips. If unset, `music_directory` is read from `$XDG_CONFIG_HOME/mpd/mpd.conf` (`~/.config/mpd/mpd.conf` when unset), `~/.mpdconf`, or `/etc/mpd.conf`, whichever exists first. |
-| `MPD_DISPLAY_EXPORT_DIR` | Output folder for exported clips. Defaults to `~/Videos/mpd-display`. |
-| `MPD_DISPLAY_LAYOUT` | `apple`, `vibrant` or `spotify`. Defaults to `apple`. |
-| `MPD_DISPLAY_LYRICS` | `on` or `off`. Defaults to `on`. |
-| `MPD_DISPLAY_MOTION` | `on` or `off`: the moving backdrop. Defaults to `on`. |
-| `MPD_DISPLAY_ARTIST_BG` | `on` or `off`: the artist background in every layout. Defaults to on for the Spotify layout and off for the others. |
-| `MPD_DISPLAY_TINT` | `on` or `off`: [album colours](#album-colours) for text, icons and bars. Defaults to `on`. |
-| `MPD_DISPLAY_SKIP_BUTTONS` | `on` or `off`: previous/next buttons beside the Spotify layout's progress bar. Defaults to `on`. |
-| `MPD_DISPLAY_LYRICS_ALIGN` | `left`, `center` or `right`: alignment of the Spotify layout's lyrics. Defaults to `right`. |
-| `MPD_DISPLAY_LYRICS_FLOW` | `classic` or `stacked`: how the Spotify layout's synced lyrics move. Defaults to `stacked`. |
-| `MPD_DISPLAY_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable LRCLIB lookups. Enabled by default. |
+| `ENCORE_EXPORT_DIR` | Output folder for exported clips. Defaults to `~/Videos/encore`. |
+| `ENCORE_LAYOUT` | `apple`, `vibrant` or `spotify`. Defaults to `apple`. |
+| `ENCORE_LYRICS` | `on` or `off`. Defaults to `on`. |
+| `ENCORE_MOTION` | `on` or `off`: the moving backdrop. Defaults to `on`. |
+| `ENCORE_ARTIST_BG` | `on` or `off`: the artist background in every layout. Defaults to on for the Spotify layout and off for the others. |
+| `ENCORE_TINT` | `on` or `off`: [album colours](#album-colours) for text, icons and bars. Defaults to `on`. |
+| `ENCORE_SKIP_BUTTONS` | `on` or `off`: previous/next buttons beside the Spotify layout's progress bar. Defaults to `on`. |
+| `ENCORE_LYRICS_ALIGN` | `left`, `center` or `right`: alignment of the Spotify layout's lyrics. Defaults to `right`. |
+| `ENCORE_LYRICS_FLOW` | `classic` or `stacked`: how the Spotify layout's synced lyrics move. Defaults to `stacked`. |
+| `ENCORE_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable LRCLIB lookups. Enabled by default. |
 
 ## Exporting lyric clips
 Renders a share-ready MP4 of the Apple, Vibrant or Spotify layout (lyrics, album art, title and progress bar) for a chosen part of the current song. Rendering happens offline in the background on the GPU while the display keeps running; with the CPU encoding at the same time, a clip with the moving backdrop takes a few times its own length to export. Requires `ffmpeg` with libx264 and aac.
@@ -161,13 +165,13 @@ Both presets use x264's `medium` preset with `-tune film` and auto-variance adap
 Audio is cut from the song's file in the MPD music directory, with short fades, and can be toggled with the **Audio** switch. The music directory comes from `MPD_MUSIC_DIR`, else `music_directory` in `$XDG_CONFIG_HOME/mpd/mpd.conf` (`~/.config/mpd/mpd.conf` when unset), `~/.mpdconf`, or `/etc/mpd.conf`. If the file cannot be found, the clip is exported without audio and the toast says so.
 
 ### Output
-Files are written to `~/Videos/mpd-display/` (override with `MPD_DISPLAY_EXPORT_DIR`) and named `<Artist> - <Title> (1m05-1m35) 9x16.mp4`, with ` (2)`, ` (3)`, ... appended if the name is taken. Exports run one at a time. A toast in the bottom-right corner shows progress, its × cancels the export, and clicking the "Saved" toast opens the folder.
+Files are written to `~/Videos/encore/` (override with `ENCORE_EXPORT_DIR`) and named `<Artist> - <Title> (1m05-1m35) 9x16.mp4`, with ` (2)`, ` (3)`, ... appended if the name is taken. Exports run one at a time. A toast in the bottom-right corner shows progress, its × cancels the export, and clicking the "Saved" toast opens the folder.
 
 ## Lyrics
 Lyrics are looked up in this order, and the first hit wins:
 1. **Sidecar file** (requires `MPD_MUSIC_DIR`): `<music dir>/<song>.lrc`, or `.txt` for unsynced lyrics, next to the audio file.
 2. **Local folder**: `./lyrics/<artist> - <title>.lrc` (or `.txt`). The primary artist and a bare `<title>` are also tried, and names are matched case-insensitively.
-3. **Disk cache**: `~/.cache/mpd-display-rs/lyrics/`
+3. **Disk cache**: `~/.cache/encore/lyrics/`
 4. **[LRCLIB](https://lrclib.net)**: free, no API key needed.
 
 Results from LRCLIB are saved to the disk cache, so lyrics keep working offline afterwards. The next queued song is fetched ahead of time, and songs with no lyrics found are remembered for 7 days before being looked up again.

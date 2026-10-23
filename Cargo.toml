@@ -1,5 +1,5 @@
 [package]
-name = "mpd-display-rs"
+name = "encore"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,7 +7,7 @@ edition = "2021"
 path = "src/lib.rs"
 
 [[bin]]
-name = "mpd-display-rs"
+name = "encore"
 path = "src/main.rs"
 
 [dependencies]

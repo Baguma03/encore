@@ -87,7 +87,7 @@ impl LyricsFlow {
 
 impl Config {
     /// Whether `layout` starts with the artist image as its background:
-    /// `MPD_DISPLAY_ARTIST_BG` when set, else only for the Spotify layout.
+    /// `ENCORE_ARTIST_BG` when set, else only for the Spotify layout.
     pub fn artist_bg(&self, layout: Layout) -> bool {
         self.artist_bg.unwrap_or(layout == Layout::Spotify)
     }
@@ -100,14 +100,14 @@ pub struct Config {
     pub mpd_password: Option<String>,
     /// MPD music root: `MPD_MUSIC_DIR`, else `music_directory` from MPD's config file.
     pub music_dir: Option<PathBuf>,
-    /// Folder for exported clips: `MPD_DISPLAY_EXPORT_DIR`, else `<videos>/mpd-display`.
+    /// Folder for exported clips: `ENCORE_EXPORT_DIR`, else `<videos>/encore`.
     pub export_dir: PathBuf,
     pub layout: Layout,
     pub lyrics_enabled: bool,
     pub lyrics_online: bool,
     /// Animated backdrop behind the Apple and Vibrant layouts.
     pub motion: bool,
-    /// `MPD_DISPLAY_ARTIST_BG` for every layout; see [`Config::artist_bg`].
+    /// `ENCORE_ARTIST_BG` for every layout; see [`Config::artist_bg`].
     pub artist_bg: Option<bool>,
     /// Text, icons and bars take their colours from the album art.
     pub tint: bool,
@@ -146,7 +146,7 @@ impl Config {
         video_dir: Option<PathBuf>,
     ) -> Self {
         let get = |key: &str| {
-            get(key)
+            lookup_with_legacy(&get, key)
                 .map(|v| v.trim().to_owned())
                 .filter(|v| !v.is_empty())
         };
@@ -175,20 +175,17 @@ impl Config {
             None => DEFAULT_PORT,
         };
 
-        let layout = match get("MPD_DISPLAY_LAYOUT")
-            .map(|v| v.to_lowercase())
-            .as_deref()
-        {
+        let layout = match get("ENCORE_LAYOUT").map(|v| v.to_lowercase()).as_deref() {
             Some("spotify") => Layout::Spotify,
             Some("vibrant") => Layout::Vibrant,
             Some("apple") | None => Layout::Apple,
             Some(other) => {
-                warn!("unknown MPD_DISPLAY_LAYOUT {other:?}, using apple");
+                warn!("unknown ENCORE_LAYOUT {other:?}, using apple");
                 Layout::Apple
             }
         };
 
-        let lyrics_align = match get("MPD_DISPLAY_LYRICS_ALIGN")
+        let lyrics_align = match get("ENCORE_LYRICS_ALIGN")
             .map(|v| v.to_lowercase())
             .as_deref()
         {
@@ -196,19 +193,19 @@ impl Config {
             Some("center" | "centre") => LyricsAlign::Center,
             Some("right") | None => LyricsAlign::Right,
             Some(other) => {
-                warn!("unknown MPD_DISPLAY_LYRICS_ALIGN {other:?}, using right");
+                warn!("unknown ENCORE_LYRICS_ALIGN {other:?}, using right");
                 LyricsAlign::Right
             }
         };
 
-        let lyrics_flow = match get("MPD_DISPLAY_LYRICS_FLOW")
+        let lyrics_flow = match get("ENCORE_LYRICS_FLOW")
             .map(|v| v.to_lowercase())
             .as_deref()
         {
             Some("classic") => LyricsFlow::Classic,
             Some("stacked") | None => LyricsFlow::Stacked,
             Some(other) => {
-                warn!("unknown MPD_DISPLAY_LYRICS_FLOW {other:?}, using stacked");
+                warn!("unknown ENCORE_LYRICS_FLOW {other:?}, using stacked");
                 LyricsFlow::Stacked
             }
         };
@@ -221,12 +218,12 @@ impl Config {
                 .find_map(|path| parse_music_directory(&read_file(path)?, home.as_deref())),
         };
 
-        let export_dir = match get("MPD_DISPLAY_EXPORT_DIR") {
+        let export_dir = match get("ENCORE_EXPORT_DIR") {
             Some(dir) => expand_tilde(&dir, home.as_deref()),
             None => video_dir
                 .or_else(|| home.as_ref().map(|h| h.join("Videos")))
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("mpd-display"),
+                .join("encore"),
         };
 
         Self {
@@ -236,12 +233,12 @@ impl Config {
             music_dir,
             export_dir,
             layout,
-            lyrics_enabled: get("MPD_DISPLAY_LYRICS").is_none_or(|v| !is_off(&v)),
-            lyrics_online: get("MPD_DISPLAY_LYRICS_ONLINE").is_none_or(|v| !is_off(&v)),
-            motion: get("MPD_DISPLAY_MOTION").is_none_or(|v| !is_off(&v)),
-            artist_bg: get("MPD_DISPLAY_ARTIST_BG").map(|v| !is_off(&v)),
-            tint: get("MPD_DISPLAY_TINT").is_none_or(|v| !is_off(&v)),
-            skip_buttons: get("MPD_DISPLAY_SKIP_BUTTONS").is_none_or(|v| !is_off(&v)),
+            lyrics_enabled: get("ENCORE_LYRICS").is_none_or(|v| !is_off(&v)),
+            lyrics_online: get("ENCORE_LYRICS_ONLINE").is_none_or(|v| !is_off(&v)),
+            motion: get("ENCORE_MOTION").is_none_or(|v| !is_off(&v)),
+            artist_bg: get("ENCORE_ARTIST_BG").map(|v| !is_off(&v)),
+            tint: get("ENCORE_TINT").is_none_or(|v| !is_off(&v)),
+            skip_buttons: get("ENCORE_SKIP_BUTTONS").is_none_or(|v| !is_off(&v)),
             lyrics_align,
             lyrics_flow,
         }
@@ -254,6 +251,20 @@ impl Config {
             None => self.mpd_host.clone(),
         }
     }
+}
+
+/// Variable prefix of the application's settings.
+const ENV_PREFIX: &str = "ENCORE_";
+/// Prefix older setups may still use; accepted when the `ENCORE_` name is unset.
+const LEGACY_ENV_PREFIX: &str = "MPD_DISPLAY_";
+
+/// Looks up `key`; for an `ENCORE_*` key that is unset, the `MPD_DISPLAY_*` variable of the same
+/// name is used instead.
+fn lookup_with_legacy(get: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
+    get(key).or_else(|| {
+        let rest = key.strip_prefix(ENV_PREFIX)?;
+        get(&format!("{LEGACY_ENV_PREFIX}{rest}"))
+    })
 }
 
 /// MPD config files in the order MPD itself searches them.
@@ -331,7 +342,7 @@ mod tests {
         assert_eq!(cfg.mpd_port, 6600);
         assert_eq!(cfg.mpd_password, None);
         assert_eq!(cfg.music_dir, None);
-        assert_eq!(cfg.export_dir, PathBuf::from("./mpd-display"));
+        assert_eq!(cfg.export_dir, PathBuf::from("./encore"));
         assert_eq!(cfg.layout, Layout::Apple);
         assert!(cfg.lyrics_enabled);
         assert!(cfg.lyrics_online);
@@ -344,7 +355,7 @@ mod tests {
 
     #[test]
     fn lyrics_flow() {
-        let flow = |v| parse(&[("MPD_DISPLAY_LYRICS_FLOW", v)]).lyrics_flow;
+        let flow = |v| parse(&[("ENCORE_LYRICS_FLOW", v)]).lyrics_flow;
         assert_eq!(flow("classic"), LyricsFlow::Classic);
         assert_eq!(flow(" Stacked "), LyricsFlow::Stacked);
         assert_eq!(flow("sideways"), LyricsFlow::Stacked);
@@ -354,7 +365,7 @@ mod tests {
 
     #[test]
     fn lyrics_alignment() {
-        let align = |v| parse(&[("MPD_DISPLAY_LYRICS_ALIGN", v)]).lyrics_align;
+        let align = |v| parse(&[("ENCORE_LYRICS_ALIGN", v)]).lyrics_align;
         assert_eq!(align("left"), LyricsAlign::Left);
         assert_eq!(align(" Center "), LyricsAlign::Center);
         assert_eq!(align("centre"), LyricsAlign::Center);
@@ -367,26 +378,20 @@ mod tests {
 
     #[test]
     fn tint_and_skip_button_switches() {
-        let cfg = parse(&[
-            ("MPD_DISPLAY_TINT", "off"),
-            ("MPD_DISPLAY_SKIP_BUTTONS", "OFF"),
-        ]);
+        let cfg = parse(&[("ENCORE_TINT", "off"), ("ENCORE_SKIP_BUTTONS", "OFF")]);
         assert!(!cfg.tint);
         assert!(!cfg.skip_buttons);
-        let cfg = parse(&[
-            ("MPD_DISPLAY_TINT", "on"),
-            ("MPD_DISPLAY_SKIP_BUTTONS", "on"),
-        ]);
+        let cfg = parse(&[("ENCORE_TINT", "on"), ("ENCORE_SKIP_BUTTONS", "on")]);
         assert!(cfg.tint);
         assert!(cfg.skip_buttons);
-        assert!(!parse(&[("MPD_DISPLAY_TINT", "0")]).tint);
+        assert!(!parse(&[("ENCORE_TINT", "0")]).tint);
     }
 
     #[test]
     fn motion_switch() {
-        assert!(!parse(&[("MPD_DISPLAY_MOTION", "off")]).motion);
-        assert!(!parse(&[("MPD_DISPLAY_MOTION", "0")]).motion);
-        assert!(parse(&[("MPD_DISPLAY_MOTION", "on")]).motion);
+        assert!(!parse(&[("ENCORE_MOTION", "off")]).motion);
+        assert!(!parse(&[("ENCORE_MOTION", "0")]).motion);
+        assert!(parse(&[("ENCORE_MOTION", "on")]).motion);
     }
 
     #[test]
@@ -410,9 +415,9 @@ mod tests {
     #[test]
     fn layout_and_toggles() {
         let cfg = parse(&[
-            ("MPD_DISPLAY_LAYOUT", "Spotify"),
-            ("MPD_DISPLAY_LYRICS", "off"),
-            ("MPD_DISPLAY_LYRICS_ONLINE", "0"),
+            ("ENCORE_LAYOUT", "Spotify"),
+            ("ENCORE_LYRICS", "off"),
+            ("ENCORE_LYRICS_ONLINE", "0"),
             ("MPD_MUSIC_DIR", "/srv/music"),
         ]);
         assert_eq!(cfg.layout, Layout::Spotify);
@@ -421,8 +426,8 @@ mod tests {
         assert_eq!(cfg.music_dir, Some(PathBuf::from("/srv/music")));
 
         let cfg = parse(&[
-            ("MPD_DISPLAY_LAYOUT", "bogus"),
-            ("MPD_DISPLAY_LYRICS_ONLINE", "false"),
+            ("ENCORE_LAYOUT", "bogus"),
+            ("ENCORE_LYRICS_ONLINE", "false"),
         ]);
         assert_eq!(cfg.layout, Layout::Apple);
         assert!(cfg.lyrics_enabled);
@@ -437,11 +442,11 @@ mod tests {
         assert!(!cfg.artist_bg(Layout::Apple));
         assert!(!cfg.artist_bg(Layout::Vibrant));
 
-        let on = parse(&[("MPD_DISPLAY_ARTIST_BG", "on")]);
+        let on = parse(&[("ENCORE_ARTIST_BG", "on")]);
         assert!([Layout::Spotify, Layout::Apple, Layout::Vibrant]
             .iter()
             .all(|&l| on.artist_bg(l)));
-        let off = parse(&[("MPD_DISPLAY_ARTIST_BG", "OFF")]);
+        let off = parse(&[("ENCORE_ARTIST_BG", "OFF")]);
         assert!([Layout::Spotify, Layout::Apple, Layout::Vibrant]
             .iter()
             .all(|&l| !off.artist_bg(l)));
@@ -457,11 +462,11 @@ mod tests {
     #[test]
     fn vibrant_layout_from_env() {
         assert_eq!(
-            parse(&[("MPD_DISPLAY_LAYOUT", "vibrant")]).layout,
+            parse(&[("ENCORE_LAYOUT", "vibrant")]).layout,
             Layout::Vibrant
         );
         assert_eq!(
-            parse(&[("MPD_DISPLAY_LAYOUT", " Vibrant ")]).layout,
+            parse(&[("ENCORE_LAYOUT", " Vibrant ")]).layout,
             Layout::Vibrant
         );
     }
@@ -519,17 +524,17 @@ mod tests {
 
         let cfg = Config::from_sources(env(&[("HOME", "/home/u")]), read, None);
         assert_eq!(cfg.music_dir, Some("/home/u/Tunes".into()));
-        assert_eq!(cfg.export_dir, PathBuf::from("/home/u/Videos/mpd-display"));
+        assert_eq!(cfg.export_dir, PathBuf::from("/home/u/Videos/encore"));
 
         let cfg = Config::from_sources(env(&[]), read, Some("/vids".into()));
         assert_eq!(cfg.music_dir, Some("/var/lib/mpd/music".into()));
-        assert_eq!(cfg.export_dir, PathBuf::from("/vids/mpd-display"));
+        assert_eq!(cfg.export_dir, PathBuf::from("/vids/encore"));
 
         let cfg = Config::from_sources(
             env(&[
                 ("HOME", "/home/u"),
                 ("MPD_MUSIC_DIR", "~/Override"),
-                ("MPD_DISPLAY_EXPORT_DIR", "~/clips"),
+                ("ENCORE_EXPORT_DIR", "~/clips"),
             ]),
             read,
             Some("/vids".into()),
@@ -546,5 +551,32 @@ mod tests {
             None,
         );
         assert_eq!(cfg.music_dir, Some("/x".into()));
+    }
+
+    #[test]
+    fn new_variable_name_wins_over_legacy_name() {
+        let cfg = parse(&[
+            ("ENCORE_LAYOUT", "spotify"),
+            ("MPD_DISPLAY_LAYOUT", "vibrant"),
+        ]);
+        assert_eq!(cfg.layout, Layout::Spotify);
+    }
+
+    #[test]
+    fn legacy_variable_name_is_a_fallback() {
+        let cfg = parse(&[
+            ("MPD_DISPLAY_LAYOUT", "vibrant"),
+            ("MPD_DISPLAY_TINT", "off"),
+        ]);
+        assert_eq!(cfg.layout, Layout::Vibrant);
+        assert!(!cfg.tint);
+        let cfg = parse(&[("MPD_DISPLAY_EXPORT_DIR", "/legacy")]);
+        assert_eq!(cfg.export_dir, PathBuf::from("/legacy"));
+    }
+
+    #[test]
+    fn legacy_fallback_does_not_apply_to_mpd_variables() {
+        let get = |key: &str| (key == "MPD_DISPLAY_HOST").then(|| "x".to_string());
+        assert_eq!(lookup_with_legacy(&get, "MPD_HOST"), None);
     }
 }

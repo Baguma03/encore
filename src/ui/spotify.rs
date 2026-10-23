@@ -10,7 +10,7 @@ use egui::text::{LayoutJob, TextWrapping};
 use egui::{
     Align, Align2, Color32, CursorIcon, FontId, Galley, Id, Painter, Pos2, Rect, Sense, Vec2,
 };
-use mpd_display_rs::lyrics::{Lyrics, LyricsState};
+use encore::lyrics::{Lyrics, LyricsState};
 
 use super::apple::{self, square_uv};
 use super::backdrop;
@@ -945,7 +945,7 @@ fn paint_up_next(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpd_display_rs::lyrics::LyricLine;
+    use encore::lyrics::LyricLine;
 
     fn synced(spec: &[(u64, &str)]) -> Lyrics {
         Lyrics::Synced(

@@ -5,11 +5,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use encore::lyrics::SongKey;
 use log::{info, warn};
 use mpd::song::Song;
 use mpd::status::State;
 use mpd::Client;
-use mpd_display_rs::lyrics::SongKey;
 
 use crate::config::Config;
 

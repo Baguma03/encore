@@ -4,7 +4,7 @@ pub mod lrc;
 pub mod sources;
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -78,9 +78,35 @@ pub struct LyricsConfig {
 }
 
 impl LyricsConfig {
-    /// `<cache dir>/mpd-display-rs/lyrics`.
+    /// `<cache dir>/encore/lyrics`. Cache files from the legacy `mpd-display-rs` folder are
+    /// copied over when the new folder does not exist yet.
     pub fn default_cache_dir() -> Option<PathBuf> {
-        dirs::cache_dir().map(|d| d.join("mpd-display-rs").join("lyrics"))
+        let base = dirs::cache_dir()?;
+        let dir = base.join("encore").join("lyrics");
+        migrate_legacy_cache(&base.join("mpd-display-rs").join("lyrics"), &dir);
+        Some(dir)
+    }
+}
+
+/// Copies the files of `old` into `new` when `old` exists and `new` does not. `old` is left intact.
+fn migrate_legacy_cache(old: &Path, new: &Path) {
+    if new.exists() || !old.is_dir() {
+        return;
+    }
+    let result = std::fs::create_dir_all(new).and_then(|()| {
+        for entry in std::fs::read_dir(old)? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                std::fs::copy(entry.path(), new.join(entry.file_name()))?;
+            }
+        }
+        Ok(())
+    });
+    if let Err(e) = result {
+        log::warn!(
+            "failed to copy the lyrics cache from {}: {e}",
+            old.display()
+        );
     }
 }
 
@@ -299,5 +325,29 @@ mod tests {
         assert!(matches!(provider.get(&hit), LyricsState::Found(l) if l.len() == 1));
         assert!(matches!(provider.get(&miss), LyricsState::NotFound));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_cache_is_copied_when_new_dir_is_missing() {
+        let root = std::env::temp_dir().join(format!("encore-migrate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (old, new) = (root.join("old"), root.join("new"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("a.json"), "one").unwrap();
+
+        migrate_legacy_cache(&old, &new);
+        assert_eq!(std::fs::read_to_string(new.join("a.json")).unwrap(), "one");
+        assert!(old.join("a.json").exists());
+
+        // An existing new folder is never touched.
+        std::fs::write(old.join("b.json"), "two").unwrap();
+        migrate_legacy_cache(&old, &new);
+        assert!(!new.join("b.json").exists());
+
+        // A missing old folder creates nothing.
+        let none = root.join("none");
+        migrate_legacy_cache(&root.join("absent"), &none);
+        assert!(!none.exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

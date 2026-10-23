@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use encore::lyrics::LyricsState;
 use log::{info, warn};
-use mpd_display_rs::lyrics::LyricsState;
 
 use crate::config::{Config, Layout, LyricsAlign, LyricsFlow};
 use crate::player::SongInfo;
@@ -637,8 +637,7 @@ mod tests {
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("mpd-display-export-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("encore-export-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp dir");
         dir
@@ -890,7 +889,7 @@ mod tests {
             .expect("duration");
         assert!((duration - 2.0).abs() < 0.15, "duration {duration}");
 
-        if let Some(frame_png) = std::env::var_os("EXPORT_SMOKE_FRAME") {
+        if let Some(frame_png) = std::env::var_os("ENCORE_EXPORT_SMOKE_FRAME") {
             run(std::process::Command::new("ffmpeg")
                 .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", "1", "-i"])
                 .arg(&out)
@@ -902,26 +901,26 @@ mod tests {
 
     /// Exports 6 seconds of a library song with a fixture LRC, then checks the files with
     /// ffprobe and saves frames every 0.5 s from 1 s to 4 s next to them.
-    /// Set `MPD_DISPLAY_TEST_SONG` to an MPD-relative file and `MPD_DISPLAY_EXPORT_DIR` to the
-    /// output folder. Optional: `MPD_DISPLAY_TEST_STYLE` (`dark`, `vibrant` or `spotify`),
-    /// `MPD_DISPLAY_TEST_MOTION=off`, `MPD_DISPLAY_TEST_START` (clip start in seconds, default
-    /// 60), `MPD_DISPLAY_TEST_FORMATS` (comma-separated labels such as `16x9,1x1`) and
-    /// `MPD_DISPLAY_TEST_NEXT` (the queued song for the Up next card) and
-    /// `MPD_DISPLAY_TEST_ARTIST_BG=on|off` (default on for the Spotify style only),
-    /// `MPD_DISPLAY_TEST_SECONDS` (clip length, default 6), `MPD_DISPLAY_TEST_QUALITY=small`
-    /// (default high), `MPD_DISPLAY_TEST_TINT=off` and `MPD_DISPLAY_TEST_SKIP_BUTTONS=off`
-    /// (both default on), `MPD_DISPLAY_TEST_LYRICS_ALIGN=left|center|right` (default right),
-    /// `MPD_DISPLAY_TEST_LYRICS_FLOW=classic|stacked` (default stacked),
-    /// `MPD_DISPLAY_TEST_FRAMES` (comma-separated clip times in seconds of the saved frames,
+    /// Set `ENCORE_TEST_SONG` to an MPD-relative file and `ENCORE_EXPORT_DIR` to the
+    /// output folder. Optional: `ENCORE_TEST_STYLE` (`dark`, `vibrant` or `spotify`),
+    /// `ENCORE_TEST_MOTION=off`, `ENCORE_TEST_START` (clip start in seconds, default
+    /// 60), `ENCORE_TEST_FORMATS` (comma-separated labels such as `16x9,1x1`) and
+    /// `ENCORE_TEST_NEXT` (the queued song for the Up next card) and
+    /// `ENCORE_TEST_ARTIST_BG=on|off` (default on for the Spotify style only),
+    /// `ENCORE_TEST_SECONDS` (clip length, default 6), `ENCORE_TEST_QUALITY=small`
+    /// (default high), `ENCORE_TEST_TINT=off` and `ENCORE_TEST_SKIP_BUTTONS=off`
+    /// (both default on), `ENCORE_TEST_LYRICS_ALIGN=left|center|right` (default right),
+    /// `ENCORE_TEST_LYRICS_FLOW=classic|stacked` (default stacked),
+    /// `ENCORE_TEST_FRAMES` (comma-separated clip times in seconds of the saved frames,
     /// default every 0.5 s from 1 s to 4 s) and
-    /// `MPD_DISPLAY_TEST_REFERENCE` (seconds of each format to also render losslessly to
+    /// `ENCORE_TEST_REFERENCE` (seconds of each format to also render losslessly to
     /// `reference-<format>.mkv`, for comparing the encode against). MPD is only queried for
     /// tags and art.
     #[test]
     #[ignore = "needs a GPU, ffmpeg, MPD and a song from the library"]
     fn export_of_library_song() {
-        let Ok(file) = std::env::var("MPD_DISPLAY_TEST_SONG") else {
-            eprintln!("skipped: MPD_DISPLAY_TEST_SONG is not set");
+        let Ok(file) = std::env::var("ENCORE_TEST_SONG") else {
+            eprintln!("skipped: ENCORE_TEST_SONG is not set");
             return;
         };
         let cfg = Config::from_env();
@@ -956,15 +955,15 @@ mod tests {
             }
         };
         let song = lookup(&file);
-        let next = std::env::var("MPD_DISPLAY_TEST_NEXT")
+        let next = std::env::var("ENCORE_TEST_NEXT")
             .ok()
             .filter(|f| !f.is_empty())
             .map(|f| lookup(&f));
-        let start: u64 = std::env::var("MPD_DISPLAY_TEST_START")
+        let start: u64 = std::env::var("ENCORE_TEST_START")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(60);
-        let secs: u64 = std::env::var("MPD_DISPLAY_TEST_SECONDS")
+        let secs: u64 = std::env::var("ENCORE_TEST_SECONDS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(6);
@@ -1000,13 +999,13 @@ mod tests {
                 )
             })
             .collect();
-        let lyrics = LyricsState::Found(Arc::new(mpd_display_rs::lyrics::lrc::parse_lrc(&lrc)));
-        let style = match std::env::var("MPD_DISPLAY_TEST_STYLE").as_deref() {
+        let lyrics = LyricsState::Found(Arc::new(encore::lyrics::lrc::parse_lrc(&lrc)));
+        let style = match std::env::var("ENCORE_TEST_STYLE").as_deref() {
             Ok("vibrant") => Style::Vibrant,
             Ok("spotify") => Style::Spotify,
             _ => Style::Dark,
         };
-        let formats: Vec<Aspect> = match std::env::var("MPD_DISPLAY_TEST_FORMATS") {
+        let formats: Vec<Aspect> = match std::env::var("ENCORE_TEST_FORMATS") {
             Ok(list) => Aspect::ALL
                 .into_iter()
                 .filter(|a| list.split(',').any(|l| l.trim() == a.label()))
@@ -1024,23 +1023,23 @@ mod tests {
             with_audio: true,
             fps: 30,
             style,
-            motion: std::env::var("MPD_DISPLAY_TEST_MOTION").as_deref() != Ok("off"),
-            artist_bg: match std::env::var("MPD_DISPLAY_TEST_ARTIST_BG").as_deref() {
+            motion: std::env::var("ENCORE_TEST_MOTION").as_deref() != Ok("off"),
+            artist_bg: match std::env::var("ENCORE_TEST_ARTIST_BG").as_deref() {
                 Ok(v) => v != "off",
                 Err(_) => style == Style::Spotify,
             },
-            tint: std::env::var("MPD_DISPLAY_TEST_TINT").as_deref() != Ok("off"),
-            skip_buttons: std::env::var("MPD_DISPLAY_TEST_SKIP_BUTTONS").as_deref() != Ok("off"),
-            lyrics_align: match std::env::var("MPD_DISPLAY_TEST_LYRICS_ALIGN").as_deref() {
+            tint: std::env::var("ENCORE_TEST_TINT").as_deref() != Ok("off"),
+            skip_buttons: std::env::var("ENCORE_TEST_SKIP_BUTTONS").as_deref() != Ok("off"),
+            lyrics_align: match std::env::var("ENCORE_TEST_LYRICS_ALIGN").as_deref() {
                 Ok("left") => LyricsAlign::Left,
                 Ok("center") => LyricsAlign::Center,
                 _ => LyricsAlign::Right,
             },
-            lyrics_flow: match std::env::var("MPD_DISPLAY_TEST_LYRICS_FLOW").as_deref() {
+            lyrics_flow: match std::env::var("ENCORE_TEST_LYRICS_FLOW").as_deref() {
                 Ok("classic") => LyricsFlow::Classic,
                 _ => LyricsFlow::Stacked,
             },
-            quality: match std::env::var("MPD_DISPLAY_TEST_QUALITY").as_deref() {
+            quality: match std::env::var("ENCORE_TEST_QUALITY").as_deref() {
                 Ok("small") => Quality::Small,
                 _ => Quality::High,
             },
@@ -1090,7 +1089,7 @@ mod tests {
                 .expect("duration");
             assert!((duration - secs as f64).abs() < 0.2, "duration {duration}");
 
-            let frames: Vec<f64> = match std::env::var("MPD_DISPLAY_TEST_FRAMES") {
+            let frames: Vec<f64> = match std::env::var("ENCORE_TEST_FRAMES") {
                 Ok(list) => list
                     .split(',')
                     .filter_map(|t| t.trim().parse().ok())
@@ -1117,7 +1116,7 @@ mod tests {
                 println!("{}", png.to_string_lossy());
             }
         }
-        let reference_secs = std::env::var("MPD_DISPLAY_TEST_REFERENCE")
+        let reference_secs = std::env::var("ENCORE_TEST_REFERENCE")
             .ok()
             .and_then(|s| s.parse::<u64>().ok());
         if let Some(ref_secs) = reference_secs {
@@ -1200,7 +1199,7 @@ mod tests {
         let dir = temp_dir("job");
         let cfg = Config::from_lookup(|key| match key {
             "MPD_MUSIC_DIR" => Some(dir.to_string_lossy().into_owned()),
-            "MPD_DISPLAY_EXPORT_DIR" => Some(dir.join("out").to_string_lossy().into_owned()),
+            "ENCORE_EXPORT_DIR" => Some(dir.join("out").to_string_lossy().into_owned()),
             _ => None,
         });
         let req = ExportRequest {

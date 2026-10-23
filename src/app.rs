@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use egui::{Event, Key, ViewportCommand};
-use mpd_display_rs::lyrics::{Lyrics, LyricsConfig, LyricsProvider, LyricsState};
+use encore::lyrics::{Lyrics, LyricsConfig, LyricsProvider, LyricsState};
 
 use crate::art::ArtLoader;
 use crate::config::{Config, Layout, LyricsAlign, LyricsFlow};

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use egui::{Align2, Color32, Id, Pos2, Rect, Vec2};
-use mpd_display_rs::lyrics::{Lyrics, LyricsState};
+use encore::lyrics::{Lyrics, LyricsState};
 
 use super::scheme::Ink;
 use super::widgets::{
