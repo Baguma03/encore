@@ -1,6 +1,6 @@
 //! Layout modelled on the Spotify desktop client's fullscreen mode, with controls styled after
 //! Quickshell's media widget: a rounded-square play/pause button level with the bottom of the
-//! album art, and a full-width wavy seek bar along the bottom.
+//! album art, and a full-width wavy seek bar between previous and next buttons.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,6 +50,8 @@ const UP_NEXT_SLIDE: f32 = 0.5;
 const WAVE_FADE: f32 = 0.35;
 /// Seconds for the play button to change colour between playing and paused.
 const BUTTON_MORPH: f32 = 0.2;
+/// Share of an icon's em box left of the skip icons' visible outline.
+const ICON_SIDE_BEARING: f32 = 0.19;
 /// Height of the seek bar's handle relative to its line width.
 const HANDLE_HEIGHT: f32 = 3.6;
 
@@ -60,7 +62,11 @@ struct Block {
     title: Pos2,
     /// Font size of the title; the artist is half of it.
     title_size: f32,
-    /// The seek bar, as tall as its handle, between the side margins.
+    /// Icon size of the previous and next buttons, which are as tall as the controls row.
+    icon: f32,
+    previous: Rect,
+    next: Rect,
+    /// The seek bar's row between the previous and next buttons.
     bar: Rect,
     play: Rect,
     /// Thickness of the seek bar's wave and track.
@@ -85,17 +91,34 @@ impl Block {
             Pos2::new(right, art.bottom()),
         );
 
-        let line = (unit * 0.0065).max(2.0);
+        // The controls row runs along the bottom between the side margins, the icons' visible
+        // outlines reaching the margins.
+        let icon = unit * 0.055;
         let row_y = screen.top() + h * 0.903;
-        let half = line * HANDLE_HEIGHT / 2.0;
-        let bar = Rect::from_x_y_ranges(left..=right, row_y - half..=row_y + half);
+        let row = Rect::from_x_y_ranges(left..=right, row_y - icon / 2.0..=row_y + icon / 2.0);
+        let previous = Rect::from_min_size(
+            Pos2::new(left - icon * ICON_SIDE_BEARING, row.top()),
+            Vec2::splat(icon),
+        );
+        let next = Rect::from_min_size(
+            Pos2::new(right + icon * ICON_SIDE_BEARING - icon, row.top()),
+            Vec2::splat(icon),
+        );
+        let gap = unit * 0.008;
+        let bar = Rect::from_x_y_ranges(
+            previous.right() + gap..=(next.left() - gap).max(previous.right() + gap),
+            row.y_range(),
+        );
         Self {
             art,
             title,
             title_size: unit / 9.0 * 0.9,
+            icon,
+            previous,
+            next,
             bar,
             play,
-            line,
+            line: (unit * 0.0065).max(2.0),
         }
     }
 
@@ -218,7 +241,8 @@ fn paint(
     command
 }
 
-/// The wavy seek bar and the play/pause button. Returns the command a click asked for; decoration only when capturing.
+/// The previous and next buttons either side of the wavy seek bar, and the play/pause
+/// button. Returns the command a click asked for; decoration only when capturing.
 fn paint_controls(
     ui: &egui::Ui,
     painter: &Painter,
@@ -245,7 +269,7 @@ fn paint_controls(
     let shown = if view.capture {
         progress
     } else {
-        let pad = Vec2::new(0.0, block.bar.height());
+        let pad = Vec2::new(0.0, block.icon * 0.2);
         let bar = seek_input(
             ui,
             id.with("seek"),
@@ -267,6 +291,33 @@ fn paint_controls(
         dot: scheme.on_secondary_container,
     };
     wavy::paint(painter, block.bar, shown, &style, &colors);
+
+    // Previous and next
+    for (icon, rect, cmd, key) in [
+        (
+            Icon::Previous,
+            block.previous,
+            Command::Previous,
+            "previous",
+        ),
+        (Icon::Next, block.next, Command::Next, "next"),
+    ] {
+        let hover = hover_button(ui, view, rect, id.with(key), cmd, &mut command);
+        if hover > 0.0 {
+            painter.circle_filled(
+                rect.center(),
+                rect.width() * 0.6,
+                with_alpha(scheme.secondary_container, hover * 0.8),
+            );
+        }
+        paint_icon(
+            painter,
+            icon,
+            rect.center(),
+            block.icon,
+            scheme.on_secondary_container,
+        );
+    }
 
     // Play/pause: the primary colour while playing, the secondary container while paused.
     let morph = ctx.animate_bool_with_time(id.with("play-morph"), playing, BUTTON_MORPH);
@@ -812,11 +863,13 @@ mod tests {
         assert!(b.art.width() > 1080.0 / 3.0 * 1.1 && b.art.width() < 1080.0 / 3.0 * 1.15);
         assert_eq!(b.play.bottom(), b.art.bottom());
         assert!(b.title.x > b.art.right() && b.title.y > b.art.top());
-        // The seek bar runs below the art across the screen, from the art's left edge to the
-        // play button's right edge.
+        // The controls row runs below the art across the screen, its ends at the margins.
         assert!(b.bar.top() > b.art.bottom());
-        assert_eq!(b.bar.left(), b.art.left());
-        assert_eq!(b.bar.right(), b.play.right());
+        assert!(b.previous.right() < b.bar.left());
+        assert!(b.bar.right() < b.next.left());
+        assert!(b.next.right() > b.play.right());
+        assert!(b.previous.left() < b.art.left());
+        assert!(b.bar.width() > 1920.0 * 0.8);
     }
 
     #[test]
