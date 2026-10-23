@@ -96,7 +96,7 @@ target/release/mpd-display-rs
 | `MPD_DISPLAY_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable LRCLIB lookups. Enabled by default. |
 
 ## Exporting lyric clips
-Renders a share-ready MP4 of the Apple, Vibrant or Spotify layout (lyrics, album art, title and progress bar) for a chosen part of the current song. Rendering happens offline in the background on the GPU, faster than real time, while the display keeps running. Requires `ffmpeg` with libx264 and aac.
+Renders a share-ready MP4 of the Apple, Vibrant or Spotify layout (lyrics, album art, title and progress bar) for a chosen part of the current song. Rendering happens offline in the background on the GPU while the display keeps running; with the CPU encoding at the same time, a clip with the moving backdrop takes a few times its own length to export. Requires `ffmpeg` with libx264 and aac.
 
 ### Formats
 | Format | Resolution |
@@ -117,6 +117,16 @@ Press `e` to open the export panel.
 - Alternatively, mark while listening: `[` sets the in-point and `]` the out-point, then press `e`.
 - A clip can be at most 3 minutes long.
 - `Esc` closes the panel.
+
+### Quality
+The **High quality** and **Small file** chips pick the encoder settings; the panel remembers the choice until the display restarts and shows a rough size estimate of the files next to the chips.
+
+| Preset | Video | Audio | Target |
+| --- | --- | --- | --- |
+| High quality (default) | H.264, CRF 19 | AAC 192 kbit/s | Close to the rendered frames, for keeping the clip or posting where the platform re-encodes anyway |
+| Small file | H.264, CRF 24, peak bitrate capped at 3.8 Mbit/s for 1080×1920 (scaled by pixel count for other formats) | AAC 128 kbit/s | Messengers: a 30 s 9:16 clip stays under WhatsApp's 16 MB status limit |
+
+Both presets use x264's `medium` preset with `-tune film` and auto-variance adaptive quantisation (`aq-mode=3`), which keeps dark, soft gradients from flattening into bands. Frames are converted to limited-range BT.709 YUV 4:2:0 with full chroma interpolation and tagged as BT.709, so colours match the display in players and browsers. Exported frames also carry a faint static grain (at most 2 of 255 levels, added over the blurred-art and gradient backdrops only, never over text, art or artist photos) that keeps the encoder from banding them; the live display has none.
 
 ### Audio
 Audio is cut from the song's file in the MPD music directory, with short fades, and can be toggled in the panel. The music directory comes from `MPD_MUSIC_DIR`, else `music_directory` in `$XDG_CONFIG_HOME/mpd/mpd.conf` (`~/.config/mpd/mpd.conf` when unset), `~/.mpdconf`, or `/etc/mpd.conf`. If the file cannot be found, the clip is exported without audio and the toast says so.

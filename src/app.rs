@@ -6,7 +6,7 @@ use mpd_display_rs::lyrics::{Lyrics, LyricsConfig, LyricsProvider, LyricsState};
 
 use crate::art::ArtLoader;
 use crate::config::{Config, Layout};
-use crate::export::{self, Aspect, ExportJob, ExportRequest, ExportStatus, Style};
+use crate::export::{self, Aspect, ExportJob, ExportRequest, ExportStatus, Quality, Style};
 use crate::player::{Command, PlayState, Player, PlayerState, SongInfo};
 use crate::ui::export_panel::{ExportPanel, Marks, PanelResult};
 use crate::ui::toasts::{Progress, Toast, Toasts};
@@ -89,6 +89,7 @@ pub struct App {
     export_panel: Option<ExportPanel>,
     /// Formats ticked in the export panel, kept for the session.
     export_formats: Vec<Aspect>,
+    export_quality: Quality,
     /// In and out points for the song in `marks_song`.
     marks: Marks,
     marks_song: Option<String>,
@@ -134,6 +135,7 @@ impl App {
             show_clock: true,
             export_panel: None,
             export_formats: vec![Aspect::Portrait],
+            export_quality: Quality::default(),
             marks: Marks::default(),
             marks_song: None,
             export_job: None,
@@ -247,7 +249,7 @@ impl App {
         };
         let lyrics = self.song_lyrics(panel.song());
         panel.refresh_lyrics(&lyrics, elapsed);
-        match panel.show(ctx, &mut self.export_formats) {
+        match panel.show(ctx, &mut self.export_formats, &mut self.export_quality) {
             PanelResult::Open => self.export_panel = Some(panel),
             PanelResult::Close => {}
             PanelResult::Export(req) => self.export_queue.push_back(*req),

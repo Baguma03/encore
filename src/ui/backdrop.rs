@@ -3,7 +3,9 @@
 
 use egui::emath::Rot2;
 use egui::epaint::{Mesh, Vertex};
-use egui::{Color32, Painter, Pos2, Rect, Shape, TextureHandle, Vec2};
+use egui::{
+    Color32, ColorImage, Id, Painter, Pos2, Rect, Shape, TextureHandle, TextureOptions, Vec2,
+};
 
 use super::{cover_rect, with_alpha, ArtView, View, FULL_UV};
 use crate::art::ArtTextures;
@@ -164,6 +166,60 @@ pub fn paint_artist_image(
     }
 }
 
+/// Side of the tiled grain texture in pixels.
+const GRAIN_TILE: usize = 128;
+/// Largest grain value in 8-bit levels.
+const GRAIN_MAX: u32 = 2;
+
+/// Grain at texel (`x`, `y`) of the tile, in 8-bit levels from 0 to [`GRAIN_MAX`]: a sum of
+/// hashed bits, whose bell-shaped distribution dithers without visible texture.
+pub fn grain(x: u32, y: u32) -> u8 {
+    let mut h = x.wrapping_mul(0x9E37_79B1) ^ y.wrapping_mul(0x85EB_CA77);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    h = h.wrapping_mul(0x297A_2D39);
+    h ^= h >> 15;
+    (0..GRAIN_MAX).map(|i| (h >> (i * 5)) & 1).sum::<u32>() as u8
+}
+
+/// Adds faint static grain over `rect` in exported frames, breaking up the 8-bit steps of the
+/// soft gradients below so the encoder keeps them smooth instead of flattening them into
+/// bands. Paint it after the backdrop and before text and art, which stay clean. Artist photos
+/// have texture of their own and get none, nor does the live display.
+pub fn paint_export_grain(painter: &Painter, rect: Rect, view: &View) {
+    if view.capture && !uses_artist_image(view) {
+        paint_grain(painter, rect);
+    }
+}
+
+fn paint_grain(painter: &Painter, rect: Rect) {
+    let ctx = painter.ctx();
+    let id = Id::unique("backdrop-grain");
+    let texture = ctx
+        .data_mut(|d| d.get_temp::<TextureHandle>(id))
+        .unwrap_or_else(|| {
+            let pixels = (0..GRAIN_TILE * GRAIN_TILE)
+                .map(|i| {
+                    let v = grain((i % GRAIN_TILE) as u32, (i / GRAIN_TILE) as u32);
+                    // Zero alpha in premultiplied colour blends additively.
+                    Color32::from_rgba_premultiplied(v, v, v, 0)
+                })
+                .collect();
+            let image = ColorImage::new([GRAIN_TILE; 2], pixels);
+            let texture = ctx.load_texture("backdrop-grain", image, TextureOptions::NEAREST_REPEAT);
+            ctx.data_mut(|d| d.insert_temp(id, texture.clone()));
+            texture
+        });
+    // One texel per physical pixel, anchored to the window so the grain stays put.
+    let scale = ctx.pixels_per_point() / GRAIN_TILE as f32;
+    let uv = Rect::from_min_max(
+        (rect.min.to_vec2() * scale).to_pos2(),
+        (rect.max.to_vec2() * scale).to_pos2(),
+    );
+    painter.image(texture.id(), rect, uv, Color32::WHITE);
+}
+
 fn paint_layers(painter: &Painter, rect: Rect, art: &ArtTextures, t: f32, alpha: f32) {
     let texture = &art.motion;
     // Light covers are bright enough without the additive highlight.
@@ -231,6 +287,27 @@ fn paint_rotated(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grain_is_deterministic_bounded_and_centred() {
+        let tile: Vec<u8> = (0..GRAIN_TILE as u32)
+            .flat_map(|y| (0..GRAIN_TILE as u32).map(move |x| grain(x, y)))
+            .collect();
+        let again: Vec<u8> = (0..GRAIN_TILE as u32)
+            .flat_map(|y| (0..GRAIN_TILE as u32).map(move |x| grain(x, y)))
+            .collect();
+        assert_eq!(tile, again);
+        assert!(tile.iter().all(|&v| u32::from(v) <= GRAIN_MAX));
+        assert_eq!(GRAIN_MAX, 2);
+        // Triangular: about a quarter at each end and half in the middle.
+        let share = |level| tile.iter().filter(|&&v| v == level).count() as f32 / tile.len() as f32;
+        assert!((share(0) - 0.25).abs() < 0.02, "{}", share(0));
+        assert!((share(1) - 0.5).abs() < 0.02, "{}", share(1));
+        assert!((share(2) - 0.25).abs() < 0.02, "{}", share(2));
+        // Neighbours are uncorrelated, so no pattern shows.
+        let same = tile.windows(2).filter(|w| w[0] == w[1]).count() as f32;
+        assert!((same / tile.len() as f32 - 0.375).abs() < 0.03);
+    }
 
     /// Each layer's square must cover the window at any drift: its inscribed circle has to
     /// reach the farthest window corner from the most displaced centre.

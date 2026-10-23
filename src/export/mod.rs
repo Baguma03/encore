@@ -17,6 +17,7 @@ use mpd_display_rs::lyrics::LyricsState;
 use crate::config::{Config, Layout};
 use crate::player::SongInfo;
 use ffmpeg::Encoder;
+pub use ffmpeg::Quality;
 use render::Renderer;
 pub use scene::Scene;
 
@@ -140,6 +141,7 @@ pub struct ExportRequest {
     pub motion: bool,
     /// Artist image as the background, when the artist has one.
     pub artist_bg: bool,
+    pub quality: Quality,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -535,11 +537,12 @@ impl Worker {
     ) -> Result<(), Stop> {
         let clip = req.end - req.start;
         let total = (clip.as_secs_f64() * f64::from(fps)).round().max(1.0) as u32;
-        let pre_roll = (PRE_ROLL.as_secs_f64() * f64::from(fps)).round() as u32;
+        let pre_roll = pre_roll_frames(fps);
         let args = ffmpeg::build_args(
             part,
             aspect.size(),
             fps,
+            req.quality,
             audio.map(|path| (path, req.start, clip)),
         );
         let mut encoder = Encoder::spawn(&args)?;
@@ -559,14 +562,12 @@ impl Worker {
                 encoder.kill();
                 return Err(Stop::Cancelled);
             }
-            let offset = (f64::from(i) - f64::from(pre_roll)) / f64::from(fps);
-            let elapsed = Duration::from_secs_f64((req.start.as_secs_f64() + offset).max(0.0));
+            let (time, elapsed) = frame_time(i, pre_roll, fps, req.start);
             let inputs = FrameInputs {
                 elapsed,
                 song: &req.song,
                 lyrics: &req.lyrics,
             };
-            let time = f64::from(i) / f64::from(fps);
             let pixels = match renderer.render_frame(time, dt, |ui| scene.draw(ui, &inputs)) {
                 Ok(p) => p,
                 Err(e) => {
@@ -598,6 +599,18 @@ impl Worker {
         );
         Ok(())
     }
+}
+
+/// Frames rendered before the clip at `fps`.
+fn pre_roll_frames(fps: u32) -> u32 {
+    (PRE_ROLL.as_secs_f64() * f64::from(fps)).round() as u32
+}
+
+/// Egui input time and song position of frame `i`, counting from the first pre-roll frame.
+fn frame_time(i: u32, pre_roll: u32, fps: u32, start: Duration) -> (f64, Duration) {
+    let offset = (f64::from(i) - f64::from(pre_roll)) / f64::from(fps);
+    let elapsed = Duration::from_secs_f64((start.as_secs_f64() + offset).max(0.0));
+    (f64::from(i) / f64::from(fps), elapsed)
 }
 
 #[cfg(test)]
@@ -804,7 +817,13 @@ mod tests {
         let start = Duration::from_millis(1500);
         let clip = Duration::from_secs(2);
         let out = dir.join("out.mp4");
-        let args = ffmpeg::build_args(&out, (w, h), fps, Some((&audio, start, clip)));
+        let args = ffmpeg::build_args(
+            &out,
+            (w, h),
+            fps,
+            Quality::High,
+            Some((&audio, start, clip)),
+        );
         let mut encoder = Encoder::spawn(&args).expect("ffmpeg");
         let mut renderer = Renderer::new([w, h]).expect("renderer");
         let mut scene = TestScene;
@@ -838,7 +857,8 @@ mod tests {
                 "-v",
                 "error",
                 "-show_entries",
-                "stream=codec_name,width,height,pix_fmt",
+                "stream=codec_name,width,height,pix_fmt,color_space,color_primaries,\
+                 color_transfer,color_range",
             ])
             .args(["-show_entries", "format=duration", "-of", "json"])
             .arg(&out));
@@ -851,6 +871,10 @@ mod tests {
         assert_eq!(video["width"], 540);
         assert_eq!(video["height"], 960);
         assert_eq!(video["pix_fmt"], "yuv420p");
+        for key in ["color_space", "color_primaries", "color_transfer"] {
+            assert_eq!(video[key], "bt709", "{key}");
+        }
+        assert_eq!(video["color_range"], "tv");
         assert!(streams.iter().any(|s| s["codec_name"] == "aac"), "{probe}");
         let duration: f64 = json["format"]["duration"]
             .as_str()
@@ -875,7 +899,11 @@ mod tests {
     /// `MPD_DISPLAY_TEST_MOTION=off`, `MPD_DISPLAY_TEST_START` (clip start in seconds, default
     /// 60), `MPD_DISPLAY_TEST_FORMATS` (comma-separated labels such as `16x9,1x1`) and
     /// `MPD_DISPLAY_TEST_NEXT` (the queued song for the Up next card) and
-    /// `MPD_DISPLAY_TEST_ARTIST_BG=on|off` (default on for the Spotify style only). MPD is only queried for
+    /// `MPD_DISPLAY_TEST_ARTIST_BG=on|off` (default on for the Spotify style only),
+    /// `MPD_DISPLAY_TEST_SECONDS` (clip length, default 6), `MPD_DISPLAY_TEST_QUALITY=small`
+    /// (default high) and
+    /// `MPD_DISPLAY_TEST_REFERENCE` (seconds of each format to also render losslessly to
+    /// `reference-<format>.mkv`, for comparing the encode against). MPD is only queried for
     /// tags and art.
     #[test]
     #[ignore = "needs a GPU, ffmpeg, MPD and a song from the library"]
@@ -924,8 +952,12 @@ mod tests {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(60);
+        let secs: u64 = std::env::var("MPD_DISPLAY_TEST_SECONDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(6);
 
-        let lrc: String = [
+        let fixture = [
             (-1.0, "This is the line before the clip"),
             (0.5, "First line inside the clip"),
             (
@@ -935,19 +967,27 @@ mod tests {
             (3.5, "Third"),
             (5.0, ""),
             (6.5, "Fifth line after an instrumental gap"),
-            (8.0, "After the clip"),
-        ]
-        .iter()
-        .map(|&(at, text)| {
-            let ms = ((start as f64 + at) * 1000.0) as u64;
-            format!(
-                "[{:02}:{:02}.{:02}]{text}\n",
-                ms / 60_000,
-                ms / 1000 % 60,
-                ms % 1000 / 10
-            )
-        })
-        .collect();
+            (8.0, "Another line once the gap is over"),
+        ];
+        // Longer clips get a line every 1.5 s after the fixture.
+        let extra = (0..)
+            .map(|k| 9.5 + 1.5 * f64::from(k))
+            .take_while(|&at| at < secs as f64)
+            .map(|at| (at, "One more line that keeps the lyrics moving"));
+        let lrc: String = fixture
+            .into_iter()
+            .chain(extra)
+            .chain([(secs.max(8) as f64 + 1.0, "After the clip")])
+            .map(|(at, text)| {
+                let ms = ((start as f64 + at) * 1000.0) as u64;
+                format!(
+                    "[{:02}:{:02}.{:02}]{text}\n",
+                    ms / 60_000,
+                    ms / 1000 % 60,
+                    ms % 1000 / 10
+                )
+            })
+            .collect();
         let lyrics = LyricsState::Found(Arc::new(mpd_display_rs::lyrics::lrc::parse_lrc(&lrc)));
         let style = match std::env::var("MPD_DISPLAY_TEST_STYLE").as_deref() {
             Ok("vibrant") => Style::Vibrant,
@@ -967,7 +1007,7 @@ mod tests {
             next,
             lyrics,
             start: Duration::from_secs(start),
-            end: Duration::from_secs(start + 6),
+            end: Duration::from_secs(start + secs),
             formats: formats.clone(),
             with_audio: true,
             fps: 30,
@@ -977,14 +1017,19 @@ mod tests {
                 Ok(v) => v != "off",
                 Err(_) => style == Style::Spotify,
             },
+            quality: match std::env::var("MPD_DISPLAY_TEST_QUALITY").as_deref() {
+                Ok("small") => Quality::Small,
+                _ => Quality::High,
+            },
         };
+        let reference = req.clone();
         let began = Instant::now();
         let job = spawn(&cfg, req, Box::new(|| {}));
         while !job.is_finished() {
             thread::sleep(Duration::from_millis(50));
         }
         println!(
-            "exported {} x 6s in {:.1}s",
+            "exported {} x {secs}s in {:.1}s",
             formats.len(),
             began.elapsed().as_secs_f64()
         );
@@ -1020,7 +1065,7 @@ mod tests {
                 .as_str()
                 .and_then(|d| d.parse().ok())
                 .expect("duration");
-            assert!((duration - 6.0).abs() < 0.2, "duration {duration}");
+            assert!((duration - secs as f64).abs() < 0.2, "duration {duration}");
 
             for half in 2..=8 {
                 let at = f64::from(half) / 2.0;
@@ -1043,6 +1088,80 @@ mod tests {
                 println!("{}", png.to_string_lossy());
             }
         }
+        let reference_secs = std::env::var("MPD_DISPLAY_TEST_REFERENCE")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok());
+        if let Some(ref_secs) = reference_secs {
+            for &aspect in &formats {
+                let out = cfg
+                    .export_dir
+                    .join(format!("reference-{}.mkv", aspect.label()));
+                render_reference(&cfg, &reference, aspect, ref_secs.min(secs), &out);
+                println!("{}", out.to_string_lossy());
+            }
+        }
+    }
+
+    /// Renders the first `secs` seconds of `req` in `aspect` exactly as the export does, but
+    /// encodes them losslessly as RGB to `out`.
+    fn render_reference(cfg: &Config, req: &ExportRequest, aspect: Aspect, secs: u64, out: &Path) {
+        let (w, h) = aspect.size();
+        let fps = req.fps;
+        let mut args: Vec<String> = [
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        args.extend([
+            "-s".to_owned(),
+            format!("{w}x{h}"),
+            "-r".to_owned(),
+            fps.to_string(),
+        ]);
+        args.extend(
+            [
+                "-i",
+                "-",
+                "-c:v",
+                "libx264rgb",
+                "-qp",
+                "0",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "rgb24",
+            ]
+            .map(str::to_owned),
+        );
+        args.push(out.to_string_lossy().into_owned());
+        let mut encoder = Encoder::spawn(&args).expect("ffmpeg");
+        let mut renderer = Renderer::new([w, h]).expect("renderer");
+        let mut scene = scene::default_scene(cfg, req);
+        scene.prepare(renderer.ctx());
+        let pre_roll = pre_roll_frames(fps);
+        let total = secs as u32 * fps;
+        for i in 0..pre_roll + total {
+            let (time, elapsed) = frame_time(i, pre_roll, fps, req.start);
+            let inputs = FrameInputs {
+                elapsed,
+                song: &req.song,
+                lyrics: &req.lyrics,
+            };
+            let px = renderer
+                .render_frame(time, 1.0 / fps as f32, |ui| scene.draw(ui, &inputs))
+                .expect("frame");
+            if i >= pre_roll {
+                encoder.write_frame(px).expect("write");
+            }
+        }
+        encoder.finish().expect("encode");
     }
 
     /// Runs the export thread end to end: pre-roll, progress, renaming and the missing-audio warning.
@@ -1067,6 +1186,7 @@ mod tests {
             style: Style::Dark,
             motion: true,
             artist_bg: false,
+            quality: Quality::Small,
         };
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = Arc::clone(&calls);

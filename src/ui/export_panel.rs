@@ -13,7 +13,7 @@ use mpd_display_rs::lyrics::{LyricLine, Lyrics, LyricsState};
 use super::{font_bold, font_light, with_alpha};
 use crate::art;
 use crate::config::Layout;
-use crate::export::{Aspect, ExportRequest, Style};
+use crate::export::{Aspect, ExportRequest, Quality, Style};
 use crate::player::SongInfo;
 
 /// Longest clip that can be exported.
@@ -278,7 +278,7 @@ impl ExportPanel {
         }
     }
 
-    fn request(&self, formats: &[Aspect]) -> ExportRequest {
+    fn request(&self, formats: &[Aspect], quality: Quality) -> ExportRequest {
         ExportRequest {
             song: self.song.clone(),
             next: self.next.clone(),
@@ -291,11 +291,28 @@ impl ExportPanel {
             style: self.style,
             motion: self.motion,
             artist_bg: self.artist_bg && self.has_artist_image,
+            quality,
         }
     }
 
-    /// Draws the dialog over everything else; `formats` is the session's format choice.
-    pub fn show(&mut self, ctx: &egui::Context, formats: &mut Vec<Aspect>) -> PanelResult {
+    /// Rough size of all files the export writes at `quality`.
+    fn estimate_bytes(&self, formats: &[Aspect], quality: Quality) -> u64 {
+        let secs = self.end.saturating_sub(self.start).as_secs_f64();
+        let audio = self.with_audio && self.audio_found;
+        self.style
+            .formats(formats)
+            .iter()
+            .map(|a| quality.estimate_bytes(a.size(), secs, audio))
+            .sum()
+    }
+
+    /// Draws the dialog over everything else; `formats` and `quality` are the session's choices.
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        formats: &mut Vec<Aspect>,
+        quality: &mut Quality,
+    ) -> PanelResult {
         let frame = Frame::new()
             .fill(Color32::from_rgba_unmultiplied(20, 20, 24, 235))
             .stroke(Stroke::new(1.0, Color32::from_white_alpha(20)))
@@ -316,7 +333,7 @@ impl ExportPanel {
                     .max(280.0);
                 ui.set_width(width);
                 ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-                self.contents(ui, formats)
+                self.contents(ui, formats, quality)
             });
         if modal.should_close() {
             return PanelResult::Close;
@@ -324,7 +341,12 @@ impl ExportPanel {
         modal.inner
     }
 
-    fn contents(&mut self, ui: &mut Ui, formats: &mut Vec<Aspect>) -> PanelResult {
+    fn contents(
+        &mut self,
+        ui: &mut Ui,
+        formats: &mut Vec<Aspect>,
+        quality: &mut Quality,
+    ) -> PanelResult {
         let mut result = PanelResult::Open;
         ui.label(
             RichText::new("Export clip")
@@ -402,6 +424,19 @@ impl ExportPanel {
             }
         });
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for q in Quality::ALL {
+                if chip(ui, q.display_name(), *quality == q, true).clicked() {
+                    *quality = q;
+                }
+            }
+            let bytes = self.estimate_bytes(formats, *quality);
+            if bytes > 0 {
+                ui.add_space(8.0);
+                ui.label(muted(&format!("about {}", fmt_size(bytes)), 13.0));
+            }
+        });
+        ui.horizontal(|ui| {
             if switch(ui, &mut self.with_audio, true).clicked() {
                 self.with_audio = !self.with_audio;
             }
@@ -429,7 +464,7 @@ impl ExportPanel {
         ui.add_space(6.0);
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
             if pill(ui, "Export", true, verdict.can_export()).clicked() {
-                result = PanelResult::Export(Box::new(self.request(formats)));
+                result = PanelResult::Export(Box::new(self.request(formats, *quality)));
             }
             if pill(ui, "Cancel", false, true).clicked() {
                 result = PanelResult::Close;
@@ -562,6 +597,16 @@ impl ExportPanel {
             ui.label(muted("Length", 14.0));
             ui.label(value(&fmt_precise(self.end.saturating_sub(self.start))));
         });
+    }
+}
+
+/// Formats a byte count as `12 MB`, or `0.8 MB` below 10 MB.
+pub fn fmt_size(bytes: u64) -> String {
+    let mb = bytes as f64 / 1_000_000.0;
+    if mb < 10.0 {
+        format!("{mb:.1} MB")
+    } else {
+        format!("{mb:.0} MB")
     }
 }
 
@@ -817,6 +862,13 @@ mod tests {
     }
 
     #[test]
+    fn sizes() {
+        assert_eq!(fmt_size(840_000), "0.8 MB");
+        assert_eq!(fmt_size(9_960_000), "10.0 MB");
+        assert_eq!(fmt_size(15_600_000), "16 MB");
+    }
+
+    #[test]
     fn precise_times() {
         assert_eq!(fmt_precise(ms(64_500)), "1:04.5");
         assert_eq!(fmt_precise(ms(95_000)), "1:35.0");
@@ -881,6 +933,7 @@ mod snapshot {
         );
         panel.pick(6, false);
         let mut formats = vec![Aspect::Portrait, Aspect::Square];
+        let mut quality = Quality::default();
         let mut toasts = Toasts::default();
         toasts.push(
             Toast::new(
@@ -917,7 +970,7 @@ mod snapshot {
                     };
                     apple::draw(ui, &view);
                     let ctx = ui.ctx().clone();
-                    panel.show(&ctx, &mut formats);
+                    panel.show(&ctx, &mut formats, &mut quality);
                     toasts.show(&ctx, Some(&progress));
                 })
                 .expect("frame");

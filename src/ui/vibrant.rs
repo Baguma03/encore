@@ -181,6 +181,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
     };
 
     paint_backdrop(&painter, screen, view, time);
+    backdrop::paint_export_grain(&painter, screen, view);
 
     let show_clock = view.show_clock && !view.capture;
     let clock_t = ease(ctx.animate_bool_with_time(id.with("clock"), show_clock, 0.4));

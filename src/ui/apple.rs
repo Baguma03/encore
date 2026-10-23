@@ -610,6 +610,7 @@ fn paint_backdrop(
     }
     let inset = Vec2::new(screen.width() * 0.22, screen.height() * 0.3);
     widgets::paint_vignette(painter, screen, inset, Color32::from_black_alpha(150));
+    backdrop::paint_export_grain(painter, screen, view);
 }
 
 /// The pre-darkened blurred art stretched over the window, cross-fading between songs.

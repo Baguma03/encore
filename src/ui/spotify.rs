@@ -171,6 +171,7 @@ fn paint(
     } else {
         paint_art_backdrop(ui, painter, screen, view);
     }
+    backdrop::paint_export_grain(painter, screen, view);
 
     // Album art
     let art_rect = block.art;

@@ -60,7 +60,8 @@ pub struct View<'a> {
     pub lyrics: LyricsState,
     /// Wall-clock time shown by the clock.
     pub now: chrono::DateTime<chrono::Local>,
-    /// Off-screen rendering: no clock, no hover effects and no interaction.
+    /// Off-screen rendering for exports: no clock, no hover effects and no interaction, and
+    /// grain over a blurred-art backdrop against banding in the encoded video.
     pub capture: bool,
     /// Animated backdrop: the art drifts and turns behind the Apple and Vibrant layouts.
     pub motion: bool,
