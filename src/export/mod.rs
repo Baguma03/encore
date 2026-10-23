@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use log::{info, warn};
 use mpd_display_rs::lyrics::LyricsState;
 
-use crate::config::{Config, Layout};
+use crate::config::{Config, Layout, LyricsAlign, LyricsFlow};
 use crate::player::SongInfo;
 use ffmpeg::Encoder;
 pub use ffmpeg::Quality;
@@ -141,6 +141,14 @@ pub struct ExportRequest {
     pub motion: bool,
     /// Artist image as the background, when the artist has one.
     pub artist_bg: bool,
+    /// Album colours for text, icons and bars.
+    pub tint: bool,
+    /// Previous and next buttons beside the Spotify style's progress bar.
+    pub skip_buttons: bool,
+    /// Alignment of the Spotify style's lyrics.
+    pub lyrics_align: LyricsAlign,
+    /// How the Spotify style's synced lyrics move.
+    pub lyrics_flow: LyricsFlow,
     pub quality: Quality,
 }
 
@@ -901,7 +909,11 @@ mod tests {
     /// `MPD_DISPLAY_TEST_NEXT` (the queued song for the Up next card) and
     /// `MPD_DISPLAY_TEST_ARTIST_BG=on|off` (default on for the Spotify style only),
     /// `MPD_DISPLAY_TEST_SECONDS` (clip length, default 6), `MPD_DISPLAY_TEST_QUALITY=small`
-    /// (default high) and
+    /// (default high), `MPD_DISPLAY_TEST_TINT=off` and `MPD_DISPLAY_TEST_SKIP_BUTTONS=off`
+    /// (both default on), `MPD_DISPLAY_TEST_LYRICS_ALIGN=left|center|right` (default right),
+    /// `MPD_DISPLAY_TEST_LYRICS_FLOW=classic|stacked` (default stacked),
+    /// `MPD_DISPLAY_TEST_FRAMES` (comma-separated clip times in seconds of the saved frames,
+    /// default every 0.5 s from 1 s to 4 s) and
     /// `MPD_DISPLAY_TEST_REFERENCE` (seconds of each format to also render losslessly to
     /// `reference-<format>.mkv`, for comparing the encode against). MPD is only queried for
     /// tags and art.
@@ -1017,6 +1029,17 @@ mod tests {
                 Ok(v) => v != "off",
                 Err(_) => style == Style::Spotify,
             },
+            tint: std::env::var("MPD_DISPLAY_TEST_TINT").as_deref() != Ok("off"),
+            skip_buttons: std::env::var("MPD_DISPLAY_TEST_SKIP_BUTTONS").as_deref() != Ok("off"),
+            lyrics_align: match std::env::var("MPD_DISPLAY_TEST_LYRICS_ALIGN").as_deref() {
+                Ok("left") => LyricsAlign::Left,
+                Ok("center") => LyricsAlign::Center,
+                _ => LyricsAlign::Right,
+            },
+            lyrics_flow: match std::env::var("MPD_DISPLAY_TEST_LYRICS_FLOW").as_deref() {
+                Ok("classic") => LyricsFlow::Classic,
+                _ => LyricsFlow::Stacked,
+            },
             quality: match std::env::var("MPD_DISPLAY_TEST_QUALITY").as_deref() {
                 Ok("small") => Quality::Small,
                 _ => Quality::High,
@@ -1067,8 +1090,14 @@ mod tests {
                 .expect("duration");
             assert!((duration - secs as f64).abs() < 0.2, "duration {duration}");
 
-            for half in 2..=8 {
-                let at = f64::from(half) / 2.0;
+            let frames: Vec<f64> = match std::env::var("MPD_DISPLAY_TEST_FRAMES") {
+                Ok(list) => list
+                    .split(',')
+                    .filter_map(|t| t.trim().parse().ok())
+                    .collect(),
+                Err(_) => (2..=8).map(|half| f64::from(half) / 2.0).collect(),
+            };
+            for at in frames {
                 let png = cfg
                     .export_dir
                     .join(format!("frame-{}-{at:.1}s.png", aspect.label()));
@@ -1186,6 +1215,10 @@ mod tests {
             style: Style::Dark,
             motion: true,
             artist_bg: false,
+            tint: true,
+            skip_buttons: true,
+            lyrics_align: LyricsAlign::Right,
+            lyrics_flow: LyricsFlow::Stacked,
             quality: Quality::Small,
         };
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));

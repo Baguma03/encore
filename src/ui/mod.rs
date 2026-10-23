@@ -20,8 +20,9 @@ use egui::{
 use mpd_display_rs::lyrics::LyricsState;
 
 use crate::art::{ArtTextures, Thumb};
+use crate::config::{LyricsAlign, LyricsFlow};
 use crate::player::PlayerState;
-use scheme::Scheme;
+use scheme::{Ink, Scheme};
 
 pub const FONT_LIGHT: &str = "circular-book";
 pub const FONT_BOLD: &str = "bold";
@@ -67,6 +68,34 @@ pub struct View<'a> {
     pub motion: bool,
     /// Use the artist image as the background when the song's artist has one.
     pub artist_bg: bool,
+    /// Text, icons and bars take their colours from the album art; plain white when off.
+    pub tint: bool,
+    /// Previous and next buttons at the ends of the Spotify layout's progress bar.
+    pub skip_buttons: bool,
+    /// Alignment of the Spotify layout's lyrics.
+    pub lyrics_align: LyricsAlign,
+    /// How the Spotify layout's synced lyrics move.
+    pub lyrics_flow: LyricsFlow,
+}
+
+impl View<'_> {
+    /// Colours adapted to the art, or the neutral scheme with album colours off.
+    pub fn scheme(&self) -> Scheme {
+        if self.tint {
+            self.art.scheme()
+        } else {
+            Scheme::plain()
+        }
+    }
+
+    /// Text and control colours over a dark backdrop.
+    pub fn ink_on_dark(&self) -> Ink {
+        if self.tint {
+            Ink::on_dark(&self.art.scheme())
+        } else {
+            Ink::WHITE
+        }
+    }
 }
 
 /// Registers CircularStd Book as the default proportional font and Bold as the `"bold"` family.

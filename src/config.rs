@@ -23,6 +23,68 @@ impl Layout {
     }
 }
 
+/// Horizontal alignment of the Spotify layout's lyrics.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum LyricsAlign {
+    /// Left edge on the album art's left edge.
+    Left,
+    /// Centred over the space right of the art.
+    Center,
+    /// Right edge on the play button's right edge.
+    #[default]
+    Right,
+}
+
+impl LyricsAlign {
+    pub const ALL: [LyricsAlign; 3] = [LyricsAlign::Left, LyricsAlign::Center, LyricsAlign::Right];
+
+    /// The alignment after this one in the cycle Left → Center → Right.
+    pub fn next(self) -> Self {
+        match self {
+            LyricsAlign::Left => LyricsAlign::Center,
+            LyricsAlign::Center => LyricsAlign::Right,
+            LyricsAlign::Right => LyricsAlign::Left,
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            LyricsAlign::Left => "Left",
+            LyricsAlign::Center => "Center",
+            LyricsAlign::Right => "Right",
+        }
+    }
+}
+
+/// How the Spotify layout's synced lyrics move.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum LyricsFlow {
+    /// Three lines: the previous one above the active one and the next one below.
+    Classic,
+    /// The active line at the top with the next three below it, fading out.
+    #[default]
+    Stacked,
+}
+
+impl LyricsFlow {
+    pub const ALL: [LyricsFlow; 2] = [LyricsFlow::Classic, LyricsFlow::Stacked];
+
+    /// The other flow.
+    pub fn toggled(self) -> Self {
+        match self {
+            LyricsFlow::Classic => LyricsFlow::Stacked,
+            LyricsFlow::Stacked => LyricsFlow::Classic,
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            LyricsFlow::Classic => "Classic",
+            LyricsFlow::Stacked => "Stacked",
+        }
+    }
+}
+
 impl Config {
     /// Whether `layout` starts with the artist image as its background:
     /// `MPD_DISPLAY_ARTIST_BG` when set, else only for the Spotify layout.
@@ -47,6 +109,12 @@ pub struct Config {
     pub motion: bool,
     /// `MPD_DISPLAY_ARTIST_BG` for every layout; see [`Config::artist_bg`].
     pub artist_bg: Option<bool>,
+    /// Text, icons and bars take their colours from the album art.
+    pub tint: bool,
+    /// Previous and next buttons at the ends of the Spotify layout's progress bar.
+    pub skip_buttons: bool,
+    pub lyrics_align: LyricsAlign,
+    pub lyrics_flow: LyricsFlow,
 }
 
 impl Config {
@@ -120,6 +188,31 @@ impl Config {
             }
         };
 
+        let lyrics_align = match get("MPD_DISPLAY_LYRICS_ALIGN")
+            .map(|v| v.to_lowercase())
+            .as_deref()
+        {
+            Some("left") => LyricsAlign::Left,
+            Some("center" | "centre") => LyricsAlign::Center,
+            Some("right") | None => LyricsAlign::Right,
+            Some(other) => {
+                warn!("unknown MPD_DISPLAY_LYRICS_ALIGN {other:?}, using right");
+                LyricsAlign::Right
+            }
+        };
+
+        let lyrics_flow = match get("MPD_DISPLAY_LYRICS_FLOW")
+            .map(|v| v.to_lowercase())
+            .as_deref()
+        {
+            Some("classic") => LyricsFlow::Classic,
+            Some("stacked") | None => LyricsFlow::Stacked,
+            Some(other) => {
+                warn!("unknown MPD_DISPLAY_LYRICS_FLOW {other:?}, using stacked");
+                LyricsFlow::Stacked
+            }
+        };
+
         let home = get("HOME").map(PathBuf::from);
         let music_dir = match get("MPD_MUSIC_DIR") {
             Some(dir) => Some(expand_tilde(&dir, home.as_deref())),
@@ -147,6 +240,10 @@ impl Config {
             lyrics_online: get("MPD_DISPLAY_LYRICS_ONLINE").is_none_or(|v| !is_off(&v)),
             motion: get("MPD_DISPLAY_MOTION").is_none_or(|v| !is_off(&v)),
             artist_bg: get("MPD_DISPLAY_ARTIST_BG").map(|v| !is_off(&v)),
+            tint: get("MPD_DISPLAY_TINT").is_none_or(|v| !is_off(&v)),
+            skip_buttons: get("MPD_DISPLAY_SKIP_BUTTONS").is_none_or(|v| !is_off(&v)),
+            lyrics_align,
+            lyrics_flow,
         }
     }
 
@@ -239,6 +336,50 @@ mod tests {
         assert!(cfg.lyrics_enabled);
         assert!(cfg.lyrics_online);
         assert!(cfg.motion);
+        assert!(cfg.tint);
+        assert!(cfg.skip_buttons);
+        assert_eq!(cfg.lyrics_align, LyricsAlign::Right);
+        assert_eq!(cfg.lyrics_flow, LyricsFlow::Stacked);
+    }
+
+    #[test]
+    fn lyrics_flow() {
+        let flow = |v| parse(&[("MPD_DISPLAY_LYRICS_FLOW", v)]).lyrics_flow;
+        assert_eq!(flow("classic"), LyricsFlow::Classic);
+        assert_eq!(flow(" Stacked "), LyricsFlow::Stacked);
+        assert_eq!(flow("sideways"), LyricsFlow::Stacked);
+        assert_eq!(LyricsFlow::Classic.toggled(), LyricsFlow::Stacked);
+        assert_eq!(LyricsFlow::Stacked.toggled(), LyricsFlow::Classic);
+    }
+
+    #[test]
+    fn lyrics_alignment() {
+        let align = |v| parse(&[("MPD_DISPLAY_LYRICS_ALIGN", v)]).lyrics_align;
+        assert_eq!(align("left"), LyricsAlign::Left);
+        assert_eq!(align(" Center "), LyricsAlign::Center);
+        assert_eq!(align("centre"), LyricsAlign::Center);
+        assert_eq!(align("RIGHT"), LyricsAlign::Right);
+        assert_eq!(align("diagonal"), LyricsAlign::Right);
+        assert_eq!(LyricsAlign::Left.next(), LyricsAlign::Center);
+        assert_eq!(LyricsAlign::Center.next(), LyricsAlign::Right);
+        assert_eq!(LyricsAlign::Right.next(), LyricsAlign::Left);
+    }
+
+    #[test]
+    fn tint_and_skip_button_switches() {
+        let cfg = parse(&[
+            ("MPD_DISPLAY_TINT", "off"),
+            ("MPD_DISPLAY_SKIP_BUTTONS", "OFF"),
+        ]);
+        assert!(!cfg.tint);
+        assert!(!cfg.skip_buttons);
+        let cfg = parse(&[
+            ("MPD_DISPLAY_TINT", "on"),
+            ("MPD_DISPLAY_SKIP_BUTTONS", "on"),
+        ]);
+        assert!(cfg.tint);
+        assert!(cfg.skip_buttons);
+        assert!(!parse(&[("MPD_DISPLAY_TINT", "0")]).tint);
     }
 
     #[test]

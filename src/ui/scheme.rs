@@ -5,6 +5,7 @@
 use egui::Color32;
 
 use super::widgets::lerp;
+use super::with_alpha;
 
 /// Base dark theme the art colour is mixed into.
 const BACKGROUND: Color32 = Color32::from_rgb(0x14, 0x13, 0x13);
@@ -29,6 +30,18 @@ const TRACK_CONTRAST: f32 = 1.6;
 /// Contrast of white text on `layer0`, which keeps the card dark.
 const LAYER0_CONTRAST: f32 = 7.0;
 
+/// HSL lightness of the main text tint for grey covers and for colourful ones; colourful
+/// covers get a darker, more saturated pastel.
+const TINT_LIGHTNESS: [f32; 2] = [0.95, 0.86];
+/// Saturation of the main text tint relative to the art colour's, and its ceiling.
+const TINT_SATURATION: f32 = 1.2;
+const TINT_MAX_SATURATION: f32 = 0.8;
+/// Share of white's contrast the text over the light Vibrant backdrop keeps.
+const LIGHT_TEXT_KEEP: f32 = 0.8;
+const LIGHT_SOFT_KEEP: f32 = 0.7;
+/// Opacity of the unfilled part of tinted progress bars.
+const TRACK_ALPHA: f32 = 0.2;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Scheme {
     pub primary: Color32,
@@ -42,7 +55,7 @@ pub struct Scheme {
     pub on_layer0: Color32,
     /// Secondary text on `layer0` and over the backdrops.
     pub subtext: Color32,
-    /// Main text over the full-screen backdrops: near white with a hint of the art's hue.
+    /// Main text over the full-screen backdrops: a light pastel of the art's hue.
     pub text: Color32,
 }
 
@@ -82,11 +95,7 @@ impl Scheme {
             BACKDROP_REFERENCE,
             BACKDROP_SUBTEXT_CONTRAST,
         );
-        let text = ensure_contrast(
-            mix(Color32::WHITE, on_layer0, 0.7),
-            BACKDROP_REFERENCE,
-            BACKDROP_TEXT_CONTRAST,
-        );
+        let text = ensure_contrast(pastel(color), BACKDROP_REFERENCE, BACKDROP_TEXT_CONTRAST);
         Self {
             primary,
             on_primary,
@@ -108,6 +117,14 @@ impl Scheme {
         }
     }
 
+    /// The neutral grey scheme with white text, for album colours turned off.
+    pub fn plain() -> Self {
+        Self {
+            text: Color32::WHITE,
+            ..Self::from_color(Color32::from_gray(0x4c))
+        }
+    }
+
     /// Blend from `self` to `other` by `t`, for cross-fading between songs.
     pub fn lerp(&self, other: &Self, t: f32) -> Self {
         let f = |a: Color32, b: Color32| mix(b, a, t.clamp(0.0, 1.0));
@@ -123,6 +140,66 @@ impl Scheme {
             text: f(self.text, other.text),
         }
     }
+}
+
+/// A light pastel of `color`'s hue: near white for grey colours, a clearly visible tint for
+/// colourful ones.
+fn pastel(color: Color32) -> Color32 {
+    let [h, s, _] = to_hsl(color);
+    let s = (s * TINT_SATURATION).min(TINT_MAX_SATURATION);
+    let l = lerp(TINT_LIGHTNESS[0], TINT_LIGHTNESS[1], (s / 0.6).min(1.0));
+    from_hsl([h, s, l])
+}
+
+/// Colours of text, icons and progress bars in the Apple and Vibrant layouts: plain white, or
+/// light tints of the album colours.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ink {
+    /// Title, active lyric line, icons and the filled part of progress bars.
+    pub text: Color32,
+    /// Secondary text and inactive lyric lines, which the layouts draw at reduced opacity.
+    pub soft: Color32,
+    /// Unfilled part of progress bars, translucent.
+    pub track: Color32,
+}
+
+impl Ink {
+    pub const WHITE: Self = Self {
+        text: Color32::WHITE,
+        soft: Color32::WHITE,
+        track: Color32::from_rgba_premultiplied(46, 46, 46, 46),
+    };
+
+    /// Tints of `scheme` for a dark backdrop.
+    pub fn on_dark(scheme: &Scheme) -> Self {
+        Self {
+            text: scheme.text,
+            soft: mix(scheme.text, scheme.subtext, 0.6),
+            track: with_alpha(scheme.text, TRACK_ALPHA),
+        }
+    }
+
+    /// Lighter tints of `scheme` for a light, colourful backdrop of mean relative luminance
+    /// `backdrop`, keeping most of the contrast white text would have.
+    pub fn on_light(scheme: &Scheme, backdrop: f32) -> Self {
+        let text = keep_white_contrast(scheme.text, backdrop, LIGHT_TEXT_KEEP);
+        Self {
+            text,
+            soft: keep_white_contrast(scheme.text, backdrop, LIGHT_SOFT_KEEP),
+            track: with_alpha(text, TRACK_ALPHA),
+        }
+    }
+}
+
+/// `fg` moved towards white until its contrast against a backdrop of relative luminance
+/// `backdrop` is at least `share` of white's.
+pub fn keep_white_contrast(fg: Color32, backdrop: f32, share: f32) -> Color32 {
+    let ratio = |c: Color32| (luminance(c) + 0.05) / (backdrop + 0.05);
+    let min = share * ratio(Color32::WHITE);
+    (0..=20)
+        .map(|step| mix(Color32::WHITE, fg, step as f32 / 20.0))
+        .find(|c| ratio(*c) >= min)
+        .unwrap_or(Color32::WHITE)
 }
 
 /// `weight` of `a` plus the rest of `b`, channel by channel, like `ColorUtils.mix`.
@@ -294,6 +371,44 @@ mod tests {
         let blue = Scheme::from_art(Color32::from_rgb(30, 60, 200)).text;
         assert!(red.r() > red.b(), "{red:?}");
         assert!(blue.b() > blue.r(), "{blue:?}");
+    }
+
+    #[test]
+    fn text_is_a_visible_pastel() {
+        let pink = Scheme::from_art(Color32::from_rgb(200, 60, 110)).text;
+        let [_, s, l] = to_hsl(pink);
+        assert!(s > 0.3 && l > 0.8, "{pink:?}");
+        assert!(pink.r() > pink.g() + 25, "{pink:?}");
+        let grey = Scheme::from_art(Color32::from_gray(120)).text;
+        assert!(luminance(grey) > 0.85, "{grey:?}");
+        assert_eq!(Scheme::plain().text, Color32::WHITE);
+    }
+
+    #[test]
+    fn light_backdrop_ink_keeps_contrast() {
+        for cover in COVERS {
+            let scheme = Scheme::from_art(cover);
+            for backdrop in [0.05, 0.2, 0.4, 0.7] {
+                let ink = Ink::on_light(&scheme, backdrop);
+                let ratio = |c: Color32| (luminance(c) + 0.05) / (backdrop + 0.05);
+                let white = ratio(Color32::WHITE);
+                assert!(
+                    ratio(ink.text) >= LIGHT_TEXT_KEEP * white - 1e-4,
+                    "{cover:?}"
+                );
+                assert!(
+                    ratio(ink.soft) >= LIGHT_SOFT_KEEP * white - 1e-4,
+                    "{cover:?}"
+                );
+                assert!(luminance(ink.text) >= luminance(ink.soft), "{cover:?}");
+            }
+            let dark = Ink::on_dark(&scheme);
+            assert!(contrast(dark.text, BACKDROP_REFERENCE) >= BACKDROP_TEXT_CONTRAST);
+        }
+        assert_eq!(
+            keep_white_contrast(Color32::BLACK, 1.0, 1.0),
+            Color32::WHITE
+        );
     }
 
     #[test]

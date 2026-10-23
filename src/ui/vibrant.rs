@@ -10,6 +10,7 @@ use egui::{Align2, Color32, FontId, Id, Painter, Pos2, Rect, Sense, Shape, Vec2}
 use super::apple::{self, Meta, Orientation, COLUMN_SLIDE};
 use super::backdrop;
 use super::lyrics_column::{self, LyricsColumn};
+use super::scheme::Ink;
 use super::widgets::{ease, lerp};
 use super::{font_bold, font_light, with_alpha, View};
 use crate::art;
@@ -102,7 +103,7 @@ struct Info {
 }
 
 impl Info {
-    fn new(painter: &Painter, song: &SongInfo, width: f32, unit: f32) -> Self {
+    fn new(painter: &Painter, song: &SongInfo, width: f32, unit: f32, ink: &Ink) -> Self {
         Self {
             meta: Meta::new(
                 painter,
@@ -111,6 +112,7 @@ impl Info {
                 unit * 0.045,
                 width,
                 SUBTITLE_ALPHA,
+                ink,
             ),
             left: 0.0,
             top: 0.0,
@@ -182,6 +184,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
 
     paint_backdrop(&painter, screen, view, time);
     backdrop::paint_export_grain(&painter, screen, view);
+    let ink = ink(view);
 
     let show_clock = view.show_clock && !view.capture;
     let clock_t = ease(ctx.animate_bool_with_time(id.with("clock"), show_clock, 0.4));
@@ -191,7 +194,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         COLUMN_SLIDE,
     ));
     if clock_t > 0.0 {
-        apple::paint_clock(&painter, screen, view, clock_t);
+        apple::paint_clock(&painter, screen, view, clock_t, &ink);
     }
 
     let Some(song) = view.player.current.as_ref() else {
@@ -211,9 +214,9 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
     };
 
     let place = match Orientation::of(screen.size()) {
-        Orientation::Landscape => landscape(&painter, screen, song, clock_t, lyrics_t),
-        Orientation::Portrait => portrait(&painter, screen, song, clock_t, lyrics_t),
-        Orientation::Square => square(&painter, screen, song, clock_t, lyrics_t),
+        Orientation::Landscape => landscape(&painter, screen, song, clock_t, lyrics_t, &ink),
+        Orientation::Portrait => portrait(&painter, screen, song, clock_t, lyrics_t, &ink),
+        Orientation::Square => square(&painter, screen, song, clock_t, lyrics_t, &ink),
     };
 
     if lyrics_t > 0.01 {
@@ -228,11 +231,12 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
             alpha: lyrics_t,
             line_alpha,
             shadow: text_shadow(view),
+            ink,
         };
         lyrics_column::paint(ui, id.with(&song.file), &column, view);
     }
     apple::paint_art(&painter, place.art, view, ART_RADIUS);
-    paint_info(ui, &painter, id, view, song, &place.info).or_else(background_click)
+    paint_info(ui, &painter, id, view, song, &place.info, &ink).or_else(background_click)
 }
 
 /// Art with its info in a column on the left, lyrics on the right. Without lyrics the column
@@ -243,6 +247,7 @@ fn landscape(
     song: &SongInfo,
     clock_t: f32,
     lyrics_t: f32,
+    ink: &Ink,
 ) -> Placement {
     let (w, h) = (screen.width(), screen.height());
     let content = Rect::from_min_max(
@@ -253,7 +258,7 @@ fn landscape(
         .min(content.height() / 1.32);
     let column_x = lerp(screen.center().x, screen.left() + w * 0.27, lyrics_t);
 
-    let info = Info::new(painter, song, s, s);
+    let info = Info::new(painter, song, s, s, ink);
     let gap = s * 0.06;
     let block_h = s + gap + info.height(painter);
     let top = content.center().y - block_h / 2.0;
@@ -280,6 +285,7 @@ fn portrait(
     song: &SongInfo,
     clock_t: f32,
     lyrics_t: f32,
+    ink: &Ink,
 ) -> Placement {
     let (w, h) = (screen.width(), screen.height());
     let u = w.min(h);
@@ -288,7 +294,7 @@ fn portrait(
     let bottom = screen.bottom() - h * 0.04;
 
     let s = lerp((w * 0.8).min(h * 0.42), (w * 0.62).min(h * 0.34), lyrics_t);
-    let info = Info::new(painter, song, s, u * 0.85);
+    let info = Info::new(painter, song, s, u * 0.85, ink);
     let gap = u * 0.04;
     let block_h = s + gap + info.height(painter);
     let centered = (top + bottom - block_h) / 2.0;
@@ -323,6 +329,7 @@ fn square(
     song: &SongInfo,
     clock_t: f32,
     lyrics_t: f32,
+    ink: &Ink,
 ) -> Placement {
     let (w, h) = (screen.width(), screen.height());
     let u = w.min(h);
@@ -332,7 +339,7 @@ fn square(
 
     let s = lerp(u * 0.42, u * 0.3, lyrics_t);
     let gap = u * 0.045;
-    let info = Info::new(painter, song, w - 2.0 * pad - s - gap, u * 0.75);
+    let info = Info::new(painter, song, w - 2.0 * pad - s - gap, u * 0.75, ink);
     let centered = (top + bottom - s) / 2.0;
     let art_top = lerp(centered.max(top), top, lyrics_t);
     let art = Rect::from_min_size(Pos2::new(screen.left() + pad, art_top), Vec2::splat(s));
@@ -359,13 +366,14 @@ fn paint_info(
     view: &View,
     song: &SongInfo,
     info: &Info,
+    ink: &Ink,
 ) -> Option<Command> {
     let mut y = info.top;
     let times_top = y;
     y += info.time_height(painter) + info.unit * 0.026;
     let thickness = info.thickness();
     let track = Rect::from_min_size(Pos2::new(info.left, y), Vec2::new(info.width, thickness));
-    let (elapsed, command) = apple::seek_track(ui, painter, id, view, song, track);
+    let (elapsed, command) = apple::seek_track(ui, painter, id, view, song, track, ink);
     apple::paint_times(
         painter,
         track,
@@ -373,7 +381,7 @@ fn paint_info(
         elapsed,
         song.duration.unwrap_or_default(),
         info.time_font(),
-        with_alpha(Color32::WHITE, 0.7),
+        with_alpha(ink.soft, 0.7),
     );
     y += thickness + info.unit * 0.055;
     let pos = Pos2::new(info.left + info.width / 2.0, y);
@@ -422,6 +430,33 @@ fn backdrop_brightness(view: &View) -> f32 {
 /// mid-tone art, a little for very light art, which stays light.
 pub fn darkening(brightness: f32) -> f32 {
     lerp(0.04, 0.2, smooth(brightness, 0.5, 0.9))
+}
+
+/// Relative luminance of the backdrop behind the text after its wash, roughly.
+fn backdrop_luminance(view: &View) -> f32 {
+    let gamma = if backdrop::uses_artist_image(view) {
+        let brightness = view.art.current.map_or(0.5, |a| a.artist_brightness);
+        brightness * (1.0 - artist_wash(brightness))
+    } else {
+        let brightness = backdrop_brightness(view);
+        brightness * (1.0 - darkening(brightness))
+    };
+    gamma.clamp(0.0, 1.0).powf(2.2)
+}
+
+/// Text and control colours: light tints of the album colours that keep most of white's
+/// contrast against the backdrop, or plain white with album colours off.
+fn ink(view: &View) -> Ink {
+    if view.tint {
+        Ink::on_light(&view.art.scheme(), backdrop_luminance(view))
+    } else {
+        Ink::WHITE
+    }
+}
+
+/// Opacity of the black wash over an artist image of `brightness`.
+fn artist_wash(brightness: f32) -> f32 {
+    lerp(0.2, 0.5, brightness)
 }
 
 /// Opacity of the dark halo behind text, stronger on lighter backdrops and on photos.
@@ -484,7 +519,7 @@ fn paint_backdrop(painter: &Painter, screen: Rect, view: &View, time: f64) {
         backdrop::paint_artist_image(painter, screen, art, Color32::WHITE, pan);
         // Lighter than the Apple layout's wash; the text halo does the rest.
         let brightness = art.current.map_or(0.5, |a| a.artist_brightness);
-        let wash = lerp(0.2, 0.5, brightness);
+        let wash = artist_wash(brightness);
         painter.rect_filled(screen, 0.0, with_alpha(Color32::BLACK, wash));
         return;
     }

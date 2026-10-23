@@ -5,7 +5,7 @@ use egui::ColorImage;
 use super::Style;
 use super::{ExportRequest, FrameInputs};
 use crate::art::{self, ArtImages, ArtTextures, Thumb};
-use crate::config::Config;
+use crate::config::{Config, LyricsAlign, LyricsFlow};
 use crate::player::{PlayState, PlayerState, SongInfo};
 use crate::ui::{apple, spotify, vibrant, ArtView, View};
 
@@ -22,14 +22,7 @@ pub trait Scene: Send {
 /// The scene used by [`super::spawn`]: the layout of the request's style as a
 /// non-interactive capture.
 pub fn default_scene(cfg: &Config, req: &ExportRequest) -> Box<dyn Scene> {
-    Box::new(LayoutScene::new(
-        cfg.clone(),
-        req.song.clone(),
-        req.next.clone(),
-        req.style,
-        req.motion,
-        req.artist_bg,
-    ))
+    Box::new(LayoutScene::new(cfg.clone(), req))
 }
 
 /// The layout of a [`Style`] without clock, hover effects or interaction. Art is loaded on
@@ -41,6 +34,10 @@ pub struct LayoutScene {
     style: Style,
     motion: bool,
     artist_bg: bool,
+    tint: bool,
+    skip_buttons: bool,
+    lyrics_align: LyricsAlign,
+    lyrics_flow: LyricsFlow,
     images: Option<ArtImages>,
     art: Option<ArtTextures>,
     next_image: Option<ColorImage>,
@@ -48,21 +45,19 @@ pub struct LayoutScene {
 }
 
 impl LayoutScene {
-    pub fn new(
-        cfg: Config,
-        song: SongInfo,
-        next: Option<SongInfo>,
-        style: Style,
-        motion: bool,
-        artist_bg: bool,
-    ) -> Self {
+    /// The scene for the song, style and look of `req`.
+    pub fn new(cfg: Config, req: &ExportRequest) -> Self {
         Self {
             cfg,
-            song,
-            next,
-            style,
-            motion,
-            artist_bg,
+            song: req.song.clone(),
+            next: req.next.clone(),
+            style: req.style,
+            motion: req.motion,
+            artist_bg: req.artist_bg,
+            tint: req.tint,
+            skip_buttons: req.skip_buttons,
+            lyrics_align: req.lyrics_align,
+            lyrics_flow: req.lyrics_flow,
             images: None,
             art: None,
             next_image: None,
@@ -105,6 +100,10 @@ impl Scene for LayoutScene {
             capture: true,
             motion: self.motion,
             artist_bg: self.artist_bg,
+            tint: self.tint,
+            skip_buttons: self.skip_buttons,
+            lyrics_align: self.lyrics_align,
+            lyrics_flow: self.lyrics_flow,
         };
         match self.style {
             Style::Dark => apple::draw(ui, &view),

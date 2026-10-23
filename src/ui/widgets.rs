@@ -8,6 +8,8 @@ use egui::{
     Color32, CursorIcon, Galley, Id, Painter, Pos2, Rect, Response, Sense, Shape, Stroke, Vec2,
 };
 
+use super::scheme::Ink;
+
 /// Cubic ease-in-out of `t` in `0.0..=1.0`.
 pub fn ease(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
@@ -87,6 +89,31 @@ pub fn paint_blurred_galley(
                 color.gamma_multiply(0.11),
             );
         }
+    }
+}
+
+/// Paints a galley laid out in white, tinted by `color`, smeared vertically over `length` as
+/// if moving fast; sharp when `length` is below half a point.
+pub fn paint_smeared_galley(
+    painter: &Painter,
+    pos: Pos2,
+    galley: &Arc<Galley>,
+    color: Color32,
+    length: f32,
+) {
+    if length < 0.5 {
+        painter.galley_with_override_text_color(pos, galley.clone(), color);
+        return;
+    }
+    const TAPS: usize = 5;
+    painter.galley_with_override_text_color(pos, galley.clone(), color.gamma_multiply(0.45));
+    for k in 0..TAPS {
+        let t = k as f32 / (TAPS - 1) as f32 - 0.5;
+        painter.galley_with_override_text_color(
+            pos + Vec2::new(0.0, t * length),
+            galley.clone(),
+            color.gamma_multiply(0.18),
+        );
     }
 }
 
@@ -227,7 +254,7 @@ pub fn paint_icon(painter: &Painter, icon: Icon, center: Pos2, size: f32, color:
     }
 }
 
-/// Clickable vector icon with a soft hover halo; `lit` dims the icon when false.
+/// Clickable vector icon in `color` with a soft hover halo; `lit` dims the icon when false.
 pub fn icon_button(
     ui: &egui::Ui,
     id: Id,
@@ -235,6 +262,7 @@ pub fn icon_button(
     center: Pos2,
     size: f32,
     lit: bool,
+    color: Color32,
 ) -> Response {
     let hit = Rect::from_center_size(center, Vec2::splat(size * 2.0));
     let response = ui
@@ -244,17 +272,19 @@ pub fn icon_button(
         .ctx()
         .animate_bool_with_time(id.with("hover"), response.hovered(), 0.15);
     let pressed = response.is_pointer_button_down_on();
-    paint_icon_button(ui.painter(), icon, center, size, lit, hover, pressed);
+    paint_icon_button(ui.painter(), icon, center, size, lit, color, hover, pressed);
     response
 }
 
 /// Paints an [`icon_button`] with hover amount `hover` in `0.0..=1.0`.
+#[allow(clippy::too_many_arguments)]
 pub fn paint_icon_button(
     painter: &Painter,
     icon: Icon,
     center: Pos2,
     size: f32,
     lit: bool,
+    color: Color32,
     hover: f32,
     pressed: bool,
 ) {
@@ -276,7 +306,7 @@ pub fn paint_icon_button(
         icon,
         center,
         size * scale,
-        Color32::WHITE.gamma_multiply(alpha),
+        color.gamma_multiply(alpha),
     );
 }
 
@@ -298,11 +328,18 @@ pub fn fraction_at(track: Rect, x: f32) -> f32 {
     ((x - track.left()) / track.width()).clamp(0.0, 1.0)
 }
 
-/// Thin rounded progress bar that thickens on hover and seeks on click or drag.
-pub fn seek_bar(ui: &egui::Ui, id: Id, track: Rect, progress: f32, enabled: bool) -> SeekBarOutput {
+/// Thin rounded progress bar in `ink` that thickens on hover and seeks on click or drag.
+pub fn seek_bar(
+    ui: &egui::Ui,
+    id: Id,
+    track: Rect,
+    progress: f32,
+    enabled: bool,
+    ink: &Ink,
+) -> SeekBarOutput {
     let pad = Vec2::new(track.height() * 1.5, track.height() * 2.5 + 6.0);
     let bar = seek_input(ui, id, track, pad, progress, enabled);
-    paint_seek_bar(ui.painter(), track, bar.shown, bar.hover);
+    paint_seek_bar(ui.painter(), track, bar.shown, bar.hover, ink);
     bar
 }
 
@@ -352,11 +389,11 @@ pub fn seek_input(
 }
 
 /// Paints a [`seek_bar`] filled to `shown` with hover amount `hover` in `0.0..=1.0`.
-pub fn paint_seek_bar(painter: &Painter, track: Rect, shown: f32, hover: f32) {
+pub fn paint_seek_bar(painter: &Painter, track: Rect, shown: f32, hover: f32, ink: &Ink) {
     let thickness = track.height() * lerp(1.0, 1.5, hover);
     let bar = Rect::from_center_size(track.center(), Vec2::new(track.width(), thickness));
     let radius = (thickness / 2.0).min(255.0) as u8;
-    painter.rect_filled(bar, radius, Color32::from_white_alpha(46));
+    painter.rect_filled(bar, radius, ink.track);
     let filled = Rect::from_min_size(
         bar.min,
         Vec2::new(bar.width() * shown.clamp(0.0, 1.0), thickness),
@@ -364,13 +401,13 @@ pub fn paint_seek_bar(painter: &Painter, track: Rect, shown: f32, hover: f32) {
     painter.rect_filled(
         filled,
         radius,
-        Color32::WHITE.gamma_multiply(lerp(0.78, 1.0, hover)),
+        ink.text.gamma_multiply(lerp(0.78, 1.0, hover)),
     );
     if hover > 0.0 {
         painter.circle_filled(
             Pos2::new(filled.right(), bar.center().y),
             thickness * 1.3 * hover,
-            Color32::WHITE,
+            ink.text,
         );
     }
 }

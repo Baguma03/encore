@@ -10,6 +10,7 @@ use egui::{Align2, Color32, FontId, Galley, Id, Painter, Pos2, Rect, Sense, Vec2
 
 use super::backdrop;
 use super::lyrics_column::{self, LyricsColumn};
+use super::scheme::Ink;
 use super::widgets::{
     self, ease, icon_button, lerp, paint_icon_button, paint_seek_bar, seek_bar, Icon,
 };
@@ -65,8 +66,8 @@ pub struct Meta {
 }
 
 impl Meta {
-    /// Lines of font sizes `title` and `subtitle`, shrunk to fit `width`, with the subtitle at
-    /// opacity `muted`.
+    /// Lines of font sizes `title` and `subtitle`, shrunk to fit `width`, in `ink` with the
+    /// subtitle at opacity `muted`.
     pub fn new(
         painter: &Painter,
         song: &SongInfo,
@@ -74,6 +75,7 @@ impl Meta {
         subtitle: f32,
         width: f32,
         muted: f32,
+        ink: &Ink,
     ) -> Self {
         let sub = match (song.artist.is_empty(), song.album.is_empty()) {
             (false, false) => format!("{} — {}", song.artist, song.album),
@@ -81,21 +83,14 @@ impl Meta {
             (true, _) => song.album.clone(),
         };
         Self {
-            title: fit_text(
-                painter,
-                &song.title,
-                font_bold,
-                title,
-                width,
-                Color32::WHITE,
-            ),
+            title: fit_text(painter, &song.title, font_bold, title, width, ink.text),
             subtitle: fit_text(
                 painter,
                 &sub,
                 font_light,
                 subtitle,
                 width,
-                with_alpha(Color32::WHITE, muted),
+                with_alpha(ink.soft, muted),
             ),
             gap: title / 7.5,
         }
@@ -205,6 +200,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
     let painter = ui.painter_at(screen);
     let unit = screen.width().min(screen.height());
     let time = ctx.input(|i| i.time);
+    let ink = view.ink_on_dark();
 
     let show_clock = view.show_clock && !view.capture;
     let clock_t = ease(ctx.animate_bool_with_time(id.with("clock"), show_clock, 0.4));
@@ -229,15 +225,15 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
             with_alpha(Color32::WHITE, 0.8),
         );
         if clock_t > 0.0 {
-            paint_clock(&painter, screen, view, clock_t);
+            paint_clock(&painter, screen, view, clock_t, &ink);
         }
         return background_click();
     };
 
     let place = match Orientation::of(screen.size()) {
-        Orientation::Landscape => landscape(&painter, screen, song, clock_t, lyrics_t),
-        Orientation::Portrait => portrait(&painter, screen, song, clock_t, lyrics_t),
-        Orientation::Square => square(&painter, screen, song, clock_t, lyrics_t),
+        Orientation::Landscape => landscape(&painter, screen, song, clock_t, lyrics_t, &ink),
+        Orientation::Portrait => portrait(&painter, screen, song, clock_t, lyrics_t, &ink),
+        Orientation::Square => square(&painter, screen, song, clock_t, lyrics_t, &ink),
     };
 
     paint_backdrop(
@@ -248,7 +244,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         Some((place.art.center(), place.art.width())),
     );
     if clock_t > 0.0 {
-        paint_clock(&painter, screen, view, clock_t);
+        paint_clock(&painter, screen, view, clock_t, &ink);
     }
     if lyrics_t > 0.01 {
         if !view.capture {
@@ -262,6 +258,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
             alpha: lyrics_t,
             line_alpha: lyrics_column::line_alpha,
             shadow: 0.0,
+            ink,
         };
         lyrics_column::paint(ui, id.with(&song.file), &column, view);
     }
@@ -270,7 +267,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         .meta
         .paint(&painter, place.meta_pos, place.meta_centered);
 
-    paint_controls(ui, &painter, id, view, song, &place.controls).or_else(background_click)
+    paint_controls(ui, &painter, id, view, song, &place.controls, &ink).or_else(background_click)
 }
 
 /// Art, title and controls in a column on the left, lyrics on the right. Without lyrics the
@@ -281,6 +278,7 @@ fn landscape(
     song: &SongInfo,
     clock_t: f32,
     lyrics_t: f32,
+    ink: &Ink,
 ) -> Placement {
     let (w, h) = (screen.width(), screen.height());
     let content = Rect::from_min_max(
@@ -291,7 +289,7 @@ fn landscape(
         .min(content.height() / BLOCK_HEIGHT);
     let column_x = lerp(screen.center().x, screen.left() + w * 0.27, lyrics_t);
 
-    let meta = Meta::new(painter, song, s * 0.075, s * 0.055, s, MUTED);
+    let meta = Meta::new(painter, song, s * 0.075, s * 0.055, s, MUTED, ink);
     let block_h = s * 1.33 + meta.height() + Controls::time_height(painter, s);
     let top = content.center().y - block_h / 2.0;
     let art = Rect::from_min_size(Pos2::new(column_x - s / 2.0, top), Vec2::splat(s));
@@ -330,6 +328,7 @@ fn portrait(
     song: &SongInfo,
     clock_t: f32,
     lyrics_t: f32,
+    ink: &Ink,
 ) -> Placement {
     let (w, h) = (screen.width(), screen.height());
     let u = w.min(h);
@@ -340,7 +339,7 @@ fn portrait(
     let controls_top = screen.bottom() - h * 0.045 - Controls::height(painter, control_unit);
 
     let s = lerp((w * 0.78).min(h * 0.42), (w * 0.62).min(h * 0.36), lyrics_t);
-    let meta = Meta::new(painter, song, u * 0.05, u * 0.036, s, MUTED);
+    let meta = Meta::new(painter, song, u * 0.05, u * 0.036, s, MUTED, ink);
     let meta_gap = u * 0.045;
     let block_h = s + meta_gap + meta.height();
     let centered = (top + controls_top - u * 0.04 - block_h) / 2.0;
@@ -381,6 +380,7 @@ fn square(
     song: &SongInfo,
     clock_t: f32,
     lyrics_t: f32,
+    ink: &Ink,
 ) -> Placement {
     let (w, h) = (screen.width(), screen.height());
     let u = w.min(h);
@@ -399,6 +399,7 @@ fn square(
         u * 0.034,
         w - 2.0 * pad - s - meta_gap,
         MUTED,
+        ink,
     );
     let centered = (top + controls_top - u * 0.04 - s) / 2.0;
     let art_top = lerp(centered.max(top), top, lyrics_t);
@@ -436,6 +437,7 @@ fn paint_controls(
     view: &View,
     song: &SongInfo,
     c: &Controls,
+    ink: &Ink,
 ) -> Option<Command> {
     let u = c.unit;
     let mut y = c.top;
@@ -445,7 +447,7 @@ fn paint_controls(
         Pos2::new(c.center_x, y + thickness / 2.0),
         Vec2::new(c.bar_width, thickness),
     );
-    let (elapsed, seek) = seek_track(ui, painter, id, view, song, track);
+    let (elapsed, seek) = seek_track(ui, painter, id, view, song, track, ink);
     let mut command = seek;
 
     y += thickness + u * 0.04;
@@ -456,7 +458,7 @@ fn paint_controls(
         elapsed,
         song.duration.unwrap_or_default(),
         Controls::time_font(u),
-        with_alpha(Color32::WHITE, 0.5),
+        with_alpha(ink.soft, 0.5),
     );
     y += Controls::time_height(painter, u) + u * 0.09;
 
@@ -489,16 +491,26 @@ fn paint_controls(
     for (icon, dx, size, lit, cmd) in buttons {
         let center = Pos2::new(c.center_x + c.button_span * dx, y);
         if view.capture {
-            paint_icon_button(painter, icon, center, u * size, lit, 0.0, false);
-        } else if icon_button(ui, id.with(cmd_key(cmd)), icon, center, u * size, lit).clicked() {
+            paint_icon_button(painter, icon, center, u * size, lit, ink.text, 0.0, false);
+        } else if icon_button(
+            ui,
+            id.with(cmd_key(cmd)),
+            icon,
+            center,
+            u * size,
+            lit,
+            ink.text,
+        )
+        .clicked()
+        {
             command = Some(cmd);
         }
     }
     command
 }
 
-/// Paints the seek bar on `track`, interactive unless capturing. Returns the position to show,
-/// which follows the pointer while scrubbing, and the seek a click or drag asked for.
+/// Paints the seek bar on `track` in `ink`, interactive unless capturing. Returns the position
+/// to show, which follows the pointer while scrubbing, and the seek a click or drag asked for.
 pub fn seek_track(
     ui: &egui::Ui,
     painter: &Painter,
@@ -506,14 +518,22 @@ pub fn seek_track(
     view: &View,
     song: &SongInfo,
     track: Rect,
+    ink: &Ink,
 ) -> (Duration, Option<Command>) {
     let duration = song.duration.unwrap_or_default();
     let progress = view.player.progress();
     if view.capture {
-        paint_seek_bar(painter, track, progress, 0.0);
+        paint_seek_bar(painter, track, progress, 0.0, ink);
         return (view.player.elapsed(), None);
     }
-    let bar = seek_bar(ui, id.with("seek"), track, progress, !duration.is_zero());
+    let bar = seek_bar(
+        ui,
+        id.with("seek"),
+        track,
+        progress,
+        !duration.is_zero(),
+        ink,
+    );
     let command = bar
         .seek
         .map(|fraction| Command::SeekTo(duration.mul_f32(fraction)));
@@ -680,8 +700,8 @@ pub fn paint_art(painter: &Painter, rect: Rect, view: &View, radius: f32) {
     }
 }
 
-/// Date and time centred at the top of the window, sized from its shorter side.
-pub fn paint_clock(painter: &Painter, screen: Rect, view: &View, alpha: f32) {
+/// Date and time centred at the top of the window in `ink`, sized from its shorter side.
+pub fn paint_clock(painter: &Painter, screen: Rect, view: &View, alpha: f32, ink: &Ink) {
     let h = screen.width().min(screen.height());
     let now = view.now;
     let date_pos = Pos2::new(screen.center().x, screen.top() + h * 0.045);
@@ -690,14 +710,14 @@ pub fn paint_clock(painter: &Painter, screen: Rect, view: &View, alpha: f32) {
         Align2::CENTER_TOP,
         now.format("%a %-d %b").to_string(),
         font_light(h * 0.028),
-        with_alpha(Color32::WHITE, 0.6 * alpha),
+        with_alpha(ink.soft, 0.6 * alpha),
     );
     painter.text(
         Pos2::new(date_pos.x, date.bottom() - h * 0.005),
         Align2::CENTER_TOP,
         now.format("%H:%M").to_string(),
         font_bold(h / 10.0),
-        with_alpha(Color32::WHITE, 0.85 * alpha),
+        with_alpha(ink.text, 0.85 * alpha),
     );
 }
 

@@ -1,9 +1,10 @@
-//! Dialog for choosing a clip range and formats to export, plus the range rules behind it.
+//! Dialog for choosing a clip range, look and formats to export, plus the range rules behind it.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use egui::epaint::{CornerRadius, Shadow};
+use egui::text::{LayoutJob, TextFormat};
 use egui::{
     Align, Align2, Color32, CursorIcon, Frame, Id, Margin, Modal, Pos2, Rect, Response, RichText,
     ScrollArea, Sense, Stroke, Ui, Vec2,
@@ -12,7 +13,7 @@ use mpd_display_rs::lyrics::{LyricLine, Lyrics, LyricsState};
 
 use super::{font_bold, font_light, with_alpha};
 use crate::art;
-use crate::config::Layout;
+use crate::config::{Layout, LyricsAlign, LyricsFlow};
 use crate::export::{Aspect, ExportRequest, Quality, Style};
 use crate::player::SongInfo;
 
@@ -20,20 +21,37 @@ use crate::player::SongInfo;
 pub const MAX_CLIP: Duration = Duration::from_secs(180);
 /// Clips longer than this get a warning.
 pub const LONG_CLIP: Duration = Duration::from_secs(90);
+/// Shortest range the range slider and the nudge buttons leave.
+pub const MIN_CLIP: Duration = Duration::from_millis(500);
 /// Lead-in before the first picked line.
 const LEAD_IN: Duration = Duration::from_millis(500);
-/// Step of the start and end nudge buttons.
+/// Step of the start and end nudge buttons, and with Shift held.
 const NUDGE: Duration = Duration::from_millis(500);
+const NUDGE_SHIFT: Duration = Duration::from_secs(5);
 /// Clip length after the last line when nothing follows it and the song length is unknown.
 const LAST_LINE_TAIL: Duration = Duration::from_secs(5);
 /// Clip length when only one end of the range is known.
 const DEFAULT_CLIP: Duration = Duration::from_secs(15);
 pub const EXPORT_FPS: u32 = 30;
 
-const PANEL_WIDTH: f32 = 540.0;
-const LIST_HEIGHT: f32 = 300.0;
-const TIME_COLUMN: f32 = 52.0;
+const PANEL_WIDTH: f32 = 920.0;
+/// Panels narrower than this stack the two columns.
+const TWO_COLUMNS: f32 = 760.0;
+/// Share of the width taken by the clip column.
+const CLIP_SHARE: f32 = 0.54;
+const COLUMN_GAP: f32 = 16.0;
+const CARD_GAP: f32 = 12.0;
+const CARD_PAD: f32 = 16.0;
+const LIST_HEIGHT: f32 = 290.0;
+const TIME_COLUMN: f32 = 48.0;
+/// Width of the labels in front of chip rows.
+const ROW_LABEL: f32 = 64.0;
+const PILL_HEIGHT: f32 = 38.0;
+/// Radius of the range slider's handles, and how close a press must be to grab one.
+const HANDLE_RADIUS: f32 = 8.0;
+const HANDLE_REACH: f32 = 14.0;
 const AMBER: Color32 = Color32::from_rgb(240, 190, 100);
+const DARK_TEXT: Color32 = Color32::from_rgb(20, 20, 24);
 
 /// Clip range for lyric lines `first..=last`: from just before the first line to the start of
 /// the line after the last one, the song end, or a few seconds past the last line.
@@ -91,11 +109,6 @@ impl Selection {
     pub fn bounds(&self) -> (usize, usize) {
         (self.anchor.min(self.other), self.anchor.max(self.other))
     }
-
-    fn contains(&self, i: usize) -> bool {
-        let (a, b) = self.bounds();
-        (a..=b).contains(&i)
-    }
 }
 
 /// Selection after clicking line `index`, with `extend` when shift is held.
@@ -111,6 +124,81 @@ pub fn select(prev: Option<Selection>, index: usize, extend: bool) -> Selection 
             other: index,
             awaiting_end: true,
         },
+    }
+}
+
+/// What a drag on the range slider moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grab {
+    Start,
+    End,
+    /// The whole range, keeping its length.
+    Middle,
+}
+
+/// The part of the range slider under `x`, given the handles' positions `start_x` and `end_x`:
+/// a handle within `reach` (the nearer one when both are), the range between them, or nothing.
+pub fn grab_at(x: f32, start_x: f32, end_x: f32, reach: f32) -> Option<Grab> {
+    let (to_start, to_end) = ((x - start_x).abs(), (x - end_x).abs());
+    if to_start <= reach || to_end <= reach {
+        // Handles on top of each other: the start takes presses left of it, the end the rest.
+        let start = to_start < to_end || (to_start == to_end && x < start_x);
+        Some(if start { Grab::Start } else { Grab::End })
+    } else if x > start_x && x < end_x {
+        Some(Grab::Middle)
+    } else {
+        None
+    }
+}
+
+/// What a press at `x` grabs: as [`grab_at`], or the nearer handle on the bare track.
+pub fn pick_grab(x: f32, start_x: f32, end_x: f32, reach: f32) -> Grab {
+    grab_at(x, start_x, end_x, reach).unwrap_or(if (x - start_x).abs() <= (x - end_x).abs() {
+        Grab::Start
+    } else {
+        Grab::End
+    })
+}
+
+/// The range `from` with `grab` moved by `delta` seconds, within a song of length `song`. The
+/// handles stay at least [`MIN_CLIP`] and at most [`MAX_CLIP`] apart; moving the middle keeps
+/// the length and stops at the ends of the song.
+pub fn drag_range(
+    from: (Duration, Duration),
+    grab: Grab,
+    delta: f64,
+    song: Duration,
+) -> (Duration, Duration) {
+    let (start, end) = (from.0.as_secs_f64(), from.1.as_secs_f64());
+    let (min, max, song) = (
+        MIN_CLIP.as_secs_f64(),
+        MAX_CLIP.as_secs_f64(),
+        song.as_secs_f64(),
+    );
+    // The lower bound wins when the bounds cross.
+    let fit = |v: f64, lo: f64, hi: f64| v.min(hi).max(lo);
+    let (start, end) = match grab {
+        Grab::Start => (fit(start + delta, (end - max).max(0.0), end - min), end),
+        Grab::End => (
+            start,
+            fit(end + delta, start + min, (start + max).min(song)),
+        ),
+        Grab::Middle => {
+            let len = end - start;
+            let start = fit(start + delta, 0.0, song - len);
+            (start, start + len)
+        }
+    };
+    let at = |secs: f64| Duration::from_secs_f64(secs.max(0.0));
+    (at(start), at(end))
+}
+
+/// Step of a nudge button, larger with Shift held.
+pub fn nudge_step(shift: bool) -> Duration {
+    if shift {
+        NUDGE_SHIFT
+    } else {
+        NUDGE
     }
 }
 
@@ -151,7 +239,7 @@ impl Verdict {
             Self::Long => Some("Long clip — exporting takes a while."),
             Self::Empty => Some("The end must come after the start."),
             Self::TooLong => Some("Clips are limited to 3 minutes."),
-            Self::NoFormat => Some("Pick at least one format."),
+            Self::NoFormat => Some("Pick at least one size."),
         }
     }
 }
@@ -169,6 +257,27 @@ pub enum PanelResult {
     Export(Box<ExportRequest>),
 }
 
+/// The display's live settings, which the panel starts from.
+pub struct LiveLook {
+    pub style: Style,
+    pub motion: bool,
+    /// The artist background setting of each layout.
+    pub artist_bg: HashMap<Layout, bool>,
+    pub tint: bool,
+    pub skip_buttons: bool,
+    pub lyrics_align: LyricsAlign,
+    pub lyrics_flow: LyricsFlow,
+}
+
+/// A drag on the range slider: what it holds, the range and the pointer's song position when
+/// it started.
+#[derive(Clone, Copy, Debug)]
+struct Drag {
+    grab: Grab,
+    from: (Duration, Duration),
+    pointer: f64,
+}
+
 pub struct ExportPanel {
     song: SongInfo,
     next: Option<SongInfo>,
@@ -176,6 +285,9 @@ pub struct ExportPanel {
     selection: Option<Selection>,
     start: Duration,
     end: Duration,
+    /// Length the range slider spans: the song, or a stretch past the range when unknown.
+    span: Duration,
+    drag: Option<Drag>,
     with_audio: bool,
     audio_found: bool,
     style: Style,
@@ -184,14 +296,17 @@ pub struct ExportPanel {
     artist_bg_live: HashMap<Layout, bool>,
     artist_bg: bool,
     has_artist_image: bool,
+    tint: bool,
+    skip_buttons: bool,
+    lyrics_align: LyricsAlign,
+    lyrics_flow: LyricsFlow,
     scroll_to: Option<usize>,
 }
 
 impl ExportPanel {
     /// Opens on the marked range if there is one, else on the active lyric line, else on a
-    /// stretch starting at `elapsed`, with `style` and `motion` picked and the artist
-    /// background as `artist_bg` has it for the style's layout.
-    #[allow(clippy::too_many_arguments)]
+    /// stretch starting at `elapsed`, with the look of `live` and the artist background as it
+    /// is for the style's layout.
     pub fn new(
         song: SongInfo,
         next: Option<SongInfo>,
@@ -199,24 +314,32 @@ impl ExportPanel {
         elapsed: Duration,
         marks: Marks,
         audio_found: bool,
-        style: Style,
-        motion: bool,
-        artist_bg: HashMap<Layout, bool>,
+        live: LiveLook,
     ) -> Self {
         let mut panel = Self {
             has_artist_image: art::has_artist_image(&song.artist),
-            artist_bg: artist_bg.get(&style.layout()).copied().unwrap_or(false),
-            artist_bg_live: artist_bg,
+            artist_bg: live
+                .artist_bg
+                .get(&live.style.layout())
+                .copied()
+                .unwrap_or(false),
+            artist_bg_live: live.artist_bg,
             song,
             next,
             lyrics: LyricsState::Loading,
             selection: None,
             start: Duration::ZERO,
             end: Duration::ZERO,
+            span: Duration::ZERO,
+            drag: None,
             with_audio: true,
             audio_found,
-            style,
-            motion,
+            style: live.style,
+            motion: live.motion,
+            tint: live.tint,
+            skip_buttons: live.skip_buttons,
+            lyrics_align: live.lyrics_align,
+            lyrics_flow: live.lyrics_flow,
             scroll_to: None,
         };
         if let Some((start, end)) = marks.range(panel.song.duration) {
@@ -235,6 +358,11 @@ impl ExportPanel {
                 .map_or(start + DEFAULT_CLIP, |d| (start + DEFAULT_CLIP).min(d));
             panel.set_lyrics(lyrics, elapsed);
         }
+        panel.span = panel
+            .song
+            .duration
+            .filter(|d| !d.is_zero())
+            .unwrap_or(panel.end + MAX_CLIP);
         panel
     }
 
@@ -278,6 +406,14 @@ impl ExportPanel {
         }
     }
 
+    /// Sets the range from the slider or a nudge; the next line click starts a new selection.
+    fn set_range(&mut self, range: (Duration, Duration)) {
+        if range != (self.start, self.end) {
+            (self.start, self.end) = range;
+            self.selection = None;
+        }
+    }
+
     fn request(&self, formats: &[Aspect], quality: Quality) -> ExportRequest {
         ExportRequest {
             song: self.song.clone(),
@@ -291,6 +427,10 @@ impl ExportPanel {
             style: self.style,
             motion: self.motion,
             artist_bg: self.artist_bg && self.has_artist_image,
+            tint: self.tint,
+            skip_buttons: self.skip_buttons,
+            lyrics_align: self.lyrics_align,
+            lyrics_flow: self.lyrics_flow,
             quality,
         }
     }
@@ -314,9 +454,9 @@ impl ExportPanel {
         quality: &mut Quality,
     ) -> PanelResult {
         let frame = Frame::new()
-            .fill(Color32::from_rgba_unmultiplied(20, 20, 24, 235))
+            .fill(Color32::from_rgba_unmultiplied(20, 20, 24, 240))
             .stroke(Stroke::new(1.0, Color32::from_white_alpha(20)))
-            .corner_radius(18)
+            .corner_radius(20)
             .inner_margin(Margin::same(24))
             .shadow(Shadow {
                 offset: [0, 12],
@@ -330,9 +470,9 @@ impl ExportPanel {
             .show(ctx, |ui| {
                 let width = PANEL_WIDTH
                     .min(ctx.content_rect().width() - 80.0)
-                    .max(280.0);
+                    .max(300.0);
                 ui.set_width(width);
-                ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
                 self.contents(ui, formats, quality)
             });
         if modal.should_close() {
@@ -347,121 +487,71 @@ impl ExportPanel {
         formats: &mut Vec<Aspect>,
         quality: &mut Quality,
     ) -> PanelResult {
+        self.header(ui);
+        ui.add_space(16.0);
+        let width = ui.available_width();
+        if width < TWO_COLUMNS {
+            self.clip_card(ui);
+            ui.add_space(CARD_GAP);
+            return self.settings_column(ui, formats, quality, None);
+        }
+
+        let clip_width = ((width - COLUMN_GAP) * CLIP_SHARE).round();
+        let settings_width = width - clip_width - COLUMN_GAP;
         let mut result = PanelResult::Open;
-        ui.label(
-            RichText::new("Export clip")
-                .font(font_bold(22.0))
-                .color(Color32::WHITE),
-        );
-        let name = match (self.song.artist.is_empty(), self.song.title.is_empty()) {
-            (false, false) => format!("{} — {}", self.song.artist, self.song.title),
-            (true, _) => self.song.title.clone(),
-            (false, true) => self.song.artist.clone(),
-        };
-        ui.add(egui::Label::new(muted(&name, 15.0)).truncate());
-        ui.add_space(6.0);
-
-        self.line_list(ui);
-        ui.add_space(4.0);
-        self.range_row(ui);
-        ui.add_space(4.0);
-
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            for aspect in Aspect::ALL {
-                let enabled = self.style.supports(aspect);
-                let on = if self.style == Style::Spotify {
-                    enabled
-                } else {
-                    formats.contains(&aspect)
-                };
-                if chip(ui, aspect.display_name(), on, enabled).clicked() {
-                    if on {
-                        formats.retain(|&a| a != aspect);
-                    } else {
-                        formats.push(aspect);
-                    }
-                }
-            }
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = COLUMN_GAP;
+            let clip = ui
+                .vertical(|ui| {
+                    ui.set_width(clip_width);
+                    self.clip_card(ui);
+                })
+                .response
+                .rect;
+            ui.vertical(|ui| {
+                ui.set_width(settings_width);
+                result = self.settings_column(ui, formats, quality, Some(clip.bottom()));
+            });
         });
+        result
+    }
+
+    /// "Export clip", then the song's title and artist.
+    fn header(&self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            for style in Style::ALL {
-                if chip(ui, style.display_name(), self.style == style, true).clicked() {
-                    self.style = style;
-                    self.artist_bg = self
-                        .artist_bg_live
-                        .get(&style.layout())
-                        .copied()
-                        .unwrap_or(false);
-                }
-            }
-            ui.add_space(16.0);
-            if switch(ui, &mut self.motion, true).clicked() {
-                self.motion = !self.motion;
-            }
             ui.label(
-                RichText::new("Motion")
-                    .font(font_light(15.0))
+                RichText::new("Export clip")
+                    .font(font_bold(22.0))
                     .color(Color32::WHITE),
             );
-        });
-        ui.horizontal(|ui| {
-            let mut on = self.artist_bg && self.has_artist_image;
-            if switch(ui, &mut on, self.has_artist_image).clicked() {
-                self.artist_bg = !self.artist_bg;
-            }
-            ui.label(
-                RichText::new("Artist background")
-                    .font(font_light(15.0))
-                    .color(with_alpha(
-                        Color32::WHITE,
-                        if self.has_artist_image { 1.0 } else { 0.5 },
-                    )),
-            );
-            if !self.has_artist_image {
-                ui.label(muted("no artist image", 13.0));
+            let name: Vec<&str> = [&self.song.title, &self.song.artist]
+                .into_iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !name.is_empty() {
+                let text = format!("·  {}", name.join("  ·  "));
+                ui.add(egui::Label::new(muted(&text, 16.0)).truncate());
             }
         });
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            for q in Quality::ALL {
-                if chip(ui, q.display_name(), *quality == q, true).clicked() {
-                    *quality = q;
-                }
-            }
-            let bytes = self.estimate_bytes(formats, *quality);
-            if bytes > 0 {
-                ui.add_space(8.0);
-                ui.label(muted(&format!("about {}", fmt_size(bytes)), 13.0));
-            }
-        });
-        ui.horizontal(|ui| {
-            if switch(ui, &mut self.with_audio, true).clicked() {
-                self.with_audio = !self.with_audio;
-            }
-            ui.label(
-                RichText::new("Include audio")
-                    .font(font_light(15.0))
-                    .color(Color32::WHITE),
-            );
-            if self.with_audio && !self.audio_found {
-                ui.label(muted("no audio file found", 13.0));
-            }
-        });
+    }
 
-        if self.style == Style::Spotify {
-            ui.label(muted("Spotify style is 16:9 only", 13.0));
-        }
+    /// The look and output cards and the buttons. With `bottom`, the output card stretches so
+    /// the buttons end there.
+    fn settings_column(
+        &mut self,
+        ui: &mut Ui,
+        formats: &mut Vec<Aspect>,
+        quality: &mut Quality,
+        bottom: Option<f32>,
+    ) -> PanelResult {
+        let mut result = PanelResult::Open;
+        self.look_card(ui, formats);
+        ui.add_space(CARD_GAP);
         let verdict = Verdict::of(self.start, self.end, self.style.formats(formats).len());
-        if let Some(msg) = verdict.message() {
-            ui.label(
-                RichText::new(msg)
-                    .font(font_light(13.0))
-                    .color(with_alpha(AMBER, 0.85)),
-            );
-        }
-        ui.add_space(6.0);
+        let output_bottom = bottom.map(|b| b - PILL_HEIGHT - CARD_GAP);
+        self.output_card(ui, formats, quality, verdict, output_bottom);
+        ui.add_space(CARD_GAP);
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
             if pill(ui, "Export", true, verdict.can_export()).clicked() {
                 result = PanelResult::Export(Box::new(self.request(formats, *quality)));
@@ -473,33 +563,220 @@ impl ExportPanel {
         result
     }
 
+    fn clip_card(&mut self, ui: &mut Ui) {
+        card(ui, None, |ui| {
+            section_heading(ui, "CLIP");
+            self.line_list(ui);
+            ui.add_space(4.0);
+            self.range_slider(ui);
+            self.range_rows(ui);
+        });
+    }
+
+    fn look_card(&mut self, ui: &mut Ui, formats: &mut Vec<Aspect>) {
+        card(ui, None, |ui| {
+            section_heading(ui, "LOOK");
+            ui.horizontal(|ui| {
+                row_label(ui, "Style");
+                for style in Style::ALL {
+                    if chip(ui, style.display_name(), self.style == style, true).clicked() {
+                        self.style = style;
+                        self.artist_bg = self
+                            .artist_bg_live
+                            .get(&style.layout())
+                            .copied()
+                            .unwrap_or(false);
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                row_label(ui, "Size");
+                for aspect in Aspect::ALL {
+                    let enabled = self.style.supports(aspect);
+                    let on = if self.style == Style::Spotify {
+                        enabled
+                    } else {
+                        formats.contains(&aspect)
+                    };
+                    if chip(ui, aspect.display_name(), on, enabled).clicked() {
+                        if on {
+                            formats.retain(|&a| a != aspect);
+                        } else {
+                            formats.push(aspect);
+                        }
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                row_label(ui, "Lyrics");
+                let enabled = self.style == Style::Spotify;
+                for align in LyricsAlign::ALL {
+                    let on = self.lyrics_align == align;
+                    let chip = chip(ui, align.display_name(), on, enabled);
+                    let chip = if enabled {
+                        chip
+                    } else {
+                        chip.on_hover_text("Spotify style only")
+                    };
+                    if chip.clicked() {
+                        self.lyrics_align = align;
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                row_label(ui, "Flow");
+                let enabled = self.style == Style::Spotify;
+                for flow in LyricsFlow::ALL {
+                    let on = self.lyrics_flow == flow;
+                    let chip = chip(ui, flow.display_name(), on, enabled);
+                    let chip = if enabled {
+                        chip
+                    } else {
+                        chip.on_hover_text("Spotify style only")
+                    };
+                    if chip.clicked() {
+                        self.lyrics_flow = flow;
+                    }
+                }
+            });
+            let cell = cell_width(ui);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0 * CELL_GAP;
+                if switch_cell(ui, "Motion", self.motion, true, cell).clicked() {
+                    self.motion = !self.motion;
+                }
+                let on = self.artist_bg && self.has_artist_image;
+                if switch_cell(ui, "Artist background", on, self.has_artist_image, cell).clicked() {
+                    self.artist_bg = !self.artist_bg;
+                }
+            });
+            ui.horizontal(|ui| {
+                if switch_cell(ui, "Album colours", self.tint, true, cell).clicked() {
+                    self.tint = !self.tint;
+                }
+            });
+        });
+    }
+
+    fn output_card(
+        &mut self,
+        ui: &mut Ui,
+        formats: &[Aspect],
+        quality: &mut Quality,
+        verdict: Verdict,
+        bottom: Option<f32>,
+    ) {
+        card(ui, bottom, |ui| {
+            section_heading(ui, "OUTPUT");
+            let cell = cell_width(ui);
+            ui.horizontal(|ui| {
+                if switch_cell(ui, "Audio", self.with_audio, true, cell).clicked() {
+                    self.with_audio = !self.with_audio;
+                }
+            });
+            ui.horizontal(|ui| {
+                row_label(ui, "Quality");
+                for q in Quality::ALL {
+                    let name = match q {
+                        Quality::High => "High",
+                        Quality::Small => "Small",
+                    };
+                    if chip(ui, name, *quality == q, true)
+                        .on_hover_text(q.display_name())
+                        .clicked()
+                    {
+                        *quality = q;
+                    }
+                }
+                let bytes = self.estimate_bytes(formats, *quality);
+                if bytes > 0 {
+                    ui.add_space(4.0);
+                    ui.label(muted(&format!("~{}", fmt_size(bytes)), 14.0));
+                }
+            });
+            let mut notes = Vec::new();
+            if self.style == Style::Spotify {
+                notes.push("Spotify style is 16:9 only.");
+            }
+            if !self.has_artist_image {
+                notes.push("No artist image for this artist.");
+            }
+            if self.with_audio && !self.audio_found {
+                notes.push("No audio file found — the clip will be silent.");
+            }
+            if !notes.is_empty() || verdict.message().is_some() {
+                ui.add_space(-2.0);
+                ui.spacing_mut().item_spacing.y = 4.0;
+            }
+            for note in notes {
+                ui.label(muted(note, 13.0));
+            }
+            if let Some(msg) = verdict.message() {
+                ui.label(
+                    RichText::new(msg)
+                        .font(font_light(13.0))
+                        .color(with_alpha(AMBER, 0.9)),
+                );
+            }
+        });
+    }
+
+    /// The song's lyric lines in a fixed-height box, the lines in the clip highlighted; a
+    /// message in their place without synced lyrics.
     fn line_list(&mut self, ui: &mut Ui) {
+        let box_height = LIST_HEIGHT + 8.0;
         let Some(lines) = self.synced() else {
             let text = match &self.lyrics {
                 LyricsState::Loading => "Searching lyrics…",
                 LyricsState::Found(_) => {
-                    "Lyrics aren't time-synced — use [ and ] while listening to mark a range."
+                    "These lyrics aren't time-synced.\nDrag the handles below, or mark a range \
+                     with [ and ] while listening."
                 }
-                LyricsState::NotFound => "No lyrics — use [ and ] while listening to mark a range.",
+                LyricsState::NotFound => {
+                    "No lyrics found.\nDrag the handles below, or mark a range with [ and ] \
+                     while listening."
+                }
             };
-            ui.label(muted(text, 14.0));
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), box_height), Sense::hover());
+            let painter = ui.painter();
+            painter.rect_filled(rect, 12, Color32::from_white_alpha(5));
+            let mut job = LayoutJob::simple(
+                text.to_owned(),
+                font_light(14.0),
+                with_alpha(Color32::WHITE, 0.5),
+                rect.width() - 64.0,
+            );
+            job.halign = Align::Center;
+            let galley = painter.layout_job(job);
+            painter.galley(
+                rect.center() - Vec2::new(0.0, galley.size().y / 2.0),
+                galley,
+                Color32::WHITE,
+            );
             return;
         };
         let lines = lines.to_vec();
+        let (start, end) = (self.start, self.end);
+        let in_clip = |t: Duration| t >= start && t < end;
+        let first = lines.iter().position(|l| in_clip(l.time));
+        let last = lines.iter().rposition(|l| in_clip(l.time));
+        let clip = first.zip(last);
         let mut clicked = None;
         let scroll_to = self.scroll_to.take();
         Frame::new()
-            .fill(Color32::from_white_alpha(6))
+            .fill(Color32::from_white_alpha(5))
             .corner_radius(12)
-            .inner_margin(Margin::same(6))
+            .inner_margin(Margin::same(4))
             .show(ui, |ui| {
                 ScrollArea::vertical()
                     .max_height(LIST_HEIGHT)
-                    .auto_shrink([false, true])
+                    .min_scrolled_height(LIST_HEIGHT)
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         for (i, line) in lines.iter().enumerate() {
-                            let response = self.line_row(ui, i, line);
+                            let response = line_row(ui, i, line, clip);
                             if scroll_to == Some(i) {
                                 response.scroll_to_me(Some(Align::Center));
                             }
@@ -514,89 +791,232 @@ impl ExportPanel {
             self.pick(i, extend);
         }
         let hint = match self.selection {
-            Some(s) if s.awaiting_end => "Click the last line of the clip, or the same line again.",
-            _ => "Click a line to start the clip, then click its last line.",
+            Some(s) if s.awaiting_end => "Now click the clip's last line, or the same line again.",
+            _ => "Click the first and last lines, or drag the handles.",
         };
-        ui.label(muted(hint, 13.0));
+        ui.add_space(-2.0);
+        ui.label(muted(hint, 12.5));
     }
 
-    fn line_row(&self, ui: &mut Ui, i: usize, line: &LyricLine) -> Response {
-        let width = ui.available_width();
-        let pad = Vec2::new(10.0, 6.0);
-        let selected = self.selection.filter(|s| s.contains(i));
-        let text = match line.text.trim() {
-            "" => "• • •",
-            t => t,
-        };
-        let color = if selected.is_some() {
-            Color32::WHITE
-        } else {
-            with_alpha(Color32::WHITE, 0.55)
-        };
-        let galley = ui.painter().layout(
-            text.to_owned(),
-            font_light(15.0),
-            color,
-            width - TIME_COLUMN - 2.0 * pad.x,
+    /// A bar over the whole song with a handle at each end of the clip and a tick at every
+    /// lyric line. Handles and the range between them drag freely.
+    fn range_slider(&mut self, ui: &mut Ui) {
+        let span = self.span.as_secs_f64().max(1.0);
+        let label_font = font_light(12.0);
+        let labels = [super::fmt_time(Duration::ZERO), super::fmt_time(self.span)];
+        let label_width = labels
+            .iter()
+            .map(|t| {
+                ui.painter()
+                    .layout_no_wrap(t.clone(), label_font.clone(), Color32::WHITE)
+                    .size()
+                    .x
+            })
+            .fold(0.0, f32::max);
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), 34.0),
+            Sense::click_and_drag(),
         );
-        let height = galley.size().y + 2.0 * pad.y;
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
-        let response = response.on_hover_cursor(CursorIcon::PointingHand);
-        let painter = ui.painter();
-        if let Some(sel) = selected {
-            let (a, b) = sel.bounds();
-            let r = 10;
-            let radius = CornerRadius {
-                nw: if i == a { r } else { 0 },
-                ne: if i == a { r } else { 0 },
-                sw: if i == b { r } else { 0 },
-                se: if i == b { r } else { 0 },
+        let cy = rect.top() + 13.0;
+        let inset = label_width + 12.0 + HANDLE_RADIUS;
+        let bar = Rect::from_x_y_ranges(
+            rect.left() + inset..=rect.right() - inset,
+            cy - 2.0..=cy + 2.0,
+        );
+        let x_of = |d: Duration| bar.left() + bar.width() * (d.as_secs_f64() / span) as f32;
+        let secs_at = |x: f32| f64::from(((x - bar.left()) / bar.width()).clamp(0.0, 1.0)) * span;
+
+        if !response.is_pointer_button_down_on() {
+            self.drag = None;
+        } else if let Some(p) = response.interact_pointer_pos() {
+            let (sx, ex) = (x_of(self.start), x_of(self.end));
+            let drag = match self.drag {
+                Some(drag) => drag,
+                None => {
+                    let grab = pick_grab(p.x, sx, ex, HANDLE_REACH);
+                    // A press on the bare track brings the nearer handle to it.
+                    let pointer = match (grab_at(p.x, sx, ex, HANDLE_REACH), grab) {
+                        (Some(_), _) => secs_at(p.x),
+                        (None, Grab::Start) => self.start.as_secs_f64(),
+                        (None, _) => self.end.as_secs_f64(),
+                    };
+                    Drag {
+                        grab,
+                        from: (self.start, self.end),
+                        pointer,
+                    }
+                }
             };
-            painter.rect_filled(rect, radius, Color32::from_white_alpha(26));
-        } else if response.hovered() {
-            painter.rect_filled(rect, 10, Color32::from_white_alpha(10));
+            self.drag = Some(drag);
+            let delta = secs_at(p.x) - drag.pointer;
+            self.set_range(drag_range(drag.from, drag.grab, delta, self.span));
         }
+
+        let (sx, ex) = (x_of(self.start), x_of(self.end));
+        let hovered = response
+            .hover_pos()
+            .and_then(|p| grab_at(p.x, sx, ex, HANDLE_REACH));
+        let active = self.drag.map(|d| d.grab).or(hovered);
+        if response.hovered() || self.drag.is_some() {
+            ui.ctx().set_cursor_icon(match (self.drag, active) {
+                (Some(_), Some(Grab::Middle)) => CursorIcon::Grabbing,
+                (None, Some(Grab::Middle)) => CursorIcon::Grab,
+                (_, Some(_)) => CursorIcon::ResizeHorizontal,
+                (_, None) => CursorIcon::PointingHand,
+            });
+        }
+
+        let painter = ui.painter();
+        let label_color = with_alpha(Color32::WHITE, 0.45);
+        let [first, last] = labels;
         painter.text(
-            Pos2::new(rect.left() + pad.x, rect.top() + pad.y + 2.0),
-            Align2::LEFT_TOP,
-            super::fmt_time(line.time),
-            font_light(12.0),
-            with_alpha(Color32::WHITE, 0.4),
+            Pos2::new(rect.left(), cy),
+            Align2::LEFT_CENTER,
+            first,
+            label_font.clone(),
+            label_color,
         );
-        painter.galley(
-            Pos2::new(rect.left() + pad.x + TIME_COLUMN, rect.top() + pad.y),
-            galley,
-            color,
+        painter.text(
+            Pos2::new(rect.right(), cy),
+            Align2::RIGHT_CENTER,
+            last,
+            label_font,
+            label_color,
         );
-        response
+        painter.rect_filled(bar, 2, Color32::from_white_alpha(28));
+        for line in self.synced().unwrap_or_default() {
+            if line.time > self.span {
+                break;
+            }
+            let x = x_of(line.time);
+            let inside = line.time >= self.start && line.time < self.end;
+            let alpha = if inside { 150 } else { 60 };
+            painter.line_segment(
+                [Pos2::new(x, cy + 8.0), Pos2::new(x, cy + 13.0)],
+                Stroke::new(1.0, Color32::from_white_alpha(alpha)),
+            );
+        }
+        let middle = active == Some(Grab::Middle);
+        let range = Rect::from_x_y_ranges(sx..=ex.max(sx), bar.y_range())
+            .expand2(Vec2::new(0.0, if middle { 1.0 } else { 0.0 }));
+        painter.rect_filled(
+            range,
+            3,
+            with_alpha(Color32::WHITE, if middle { 1.0 } else { 0.85 }),
+        );
+        for (grab, x) in [(Grab::Start, sx), (Grab::End, ex)] {
+            let hot = ui.ctx().animate_bool_with_time(
+                response.id.with(grab_key(grab)),
+                active == Some(grab),
+                0.12,
+            );
+            let center = Pos2::new(x, cy);
+            let radius = HANDLE_RADIUS + 1.5 * hot;
+            painter.circle_filled(
+                center + Vec2::new(0.0, 1.0),
+                radius + 2.5,
+                Color32::from_black_alpha(60),
+            );
+            painter.circle_filled(center, radius, Color32::WHITE);
+            painter.circle_filled(center, 2.5, with_alpha(DARK_TEXT, 0.6 + 0.4 * hot));
+        }
     }
 
-    fn range_row(&mut self, ui: &mut Ui) {
-        let duration = self.song.duration;
-        let clamp = |d: Duration| duration.map_or(d, |max| d.min(max));
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.label(muted("Start", 14.0));
-            ui.label(value(&fmt_precise(self.start)));
-            if nudge(ui, "−").clicked() {
-                self.start = self.start.saturating_sub(NUDGE);
-            }
-            if nudge(ui, "+").clicked() {
-                self.start = clamp(self.start + NUDGE);
-            }
-            ui.add_space(14.0);
-            ui.label(muted("End", 14.0));
-            ui.label(value(&fmt_precise(self.end)));
-            if nudge(ui, "−").clicked() {
-                self.end = self.end.saturating_sub(NUDGE);
-            }
-            if nudge(ui, "+").clicked() {
-                self.end = clamp(self.end + NUDGE);
-            }
-            ui.add_space(14.0);
-            ui.label(muted("Length", 14.0));
-            ui.label(value(&fmt_precise(self.end.saturating_sub(self.start))));
-        });
+    /// Start and end times with nudge buttons, and the clip length.
+    fn range_rows(&mut self, ui: &mut Ui) {
+        let step = nudge_step(ui.input(|i| i.modifiers.shift)).as_secs_f64();
+        for grab in [Grab::Start, Grab::End] {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let (label, at) = match grab {
+                    Grab::Start => ("Start", self.start),
+                    _ => ("End", self.end),
+                };
+                row_label(ui, label);
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(70.0, 30.0), Sense::hover());
+                ui.painter().text(
+                    rect.left_center(),
+                    Align2::LEFT_CENTER,
+                    fmt_precise(at),
+                    font_bold(15.0),
+                    Color32::WHITE,
+                );
+                for (text, sign) in [("−", -1.0), ("+", 1.0)] {
+                    let hint = "0.5 s · Shift: 5 s";
+                    if nudge(ui, text).on_hover_text(hint).clicked() {
+                        let range = (self.start, self.end);
+                        self.set_range(drag_range(range, grab, sign * step, self.span));
+                    }
+                }
+                if grab == Grab::End {
+                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                        let len = self.end.saturating_sub(self.start);
+                        ui.label(value(&fmt_precise(len)));
+                        ui.label(muted("Length", 14.0));
+                    });
+                }
+            });
+        }
+    }
+}
+
+/// One lyric line with its time; lines `clip` (first, last) form one highlighted block.
+fn line_row(ui: &mut Ui, i: usize, line: &LyricLine, clip: Option<(usize, usize)>) -> Response {
+    let width = ui.available_width();
+    let pad = Vec2::new(10.0, 6.0);
+    let selected = clip.filter(|&(a, b)| (a..=b).contains(&i));
+    let text = match line.text.trim() {
+        "" => "• • •",
+        t => t,
+    };
+    let color = if selected.is_some() {
+        Color32::WHITE
+    } else {
+        with_alpha(Color32::WHITE, 0.55)
+    };
+    let galley = ui.painter().layout(
+        text.to_owned(),
+        font_light(15.0),
+        color,
+        width - TIME_COLUMN - 2.0 * pad.x,
+    );
+    let height = galley.size().y + 2.0 * pad.y;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    let painter = ui.painter();
+    if let Some((a, b)) = selected {
+        let r = 10;
+        let radius = CornerRadius {
+            nw: if i == a { r } else { 0 },
+            ne: if i == a { r } else { 0 },
+            sw: if i == b { r } else { 0 },
+            se: if i == b { r } else { 0 },
+        };
+        let fill = if response.hovered() { 34 } else { 26 };
+        painter.rect_filled(rect, radius, Color32::from_white_alpha(fill));
+    } else if response.hovered() {
+        painter.rect_filled(rect, 10, Color32::from_white_alpha(10));
+    }
+    painter.text(
+        Pos2::new(rect.left() + pad.x, rect.top() + pad.y + 2.0),
+        Align2::LEFT_TOP,
+        super::fmt_time(line.time),
+        font_light(12.0),
+        with_alpha(Color32::WHITE, 0.4),
+    );
+    painter.galley(
+        Pos2::new(rect.left() + pad.x + TIME_COLUMN, rect.top() + pad.y),
+        galley,
+        color,
+    );
+    response
+}
+
+fn grab_key(grab: Grab) -> &'static str {
+    match grab {
+        Grab::Start => "start",
+        Grab::End => "end",
+        Grab::Middle => "middle",
     }
 }
 
@@ -620,6 +1040,58 @@ fn value(text: &str) -> RichText {
     RichText::new(text)
         .font(font_bold(15.0))
         .color(Color32::WHITE)
+}
+
+/// A section card: a softly lighter rounded box. With `bottom`, it reaches down at least that far.
+fn card<R>(ui: &mut Ui, bottom: Option<f32>, add: impl FnOnce(&mut Ui) -> R) -> R {
+    Frame::new()
+        .fill(Color32::from_white_alpha(7))
+        .stroke(Stroke::new(1.0, Color32::from_white_alpha(12)))
+        .corner_radius(14)
+        .inner_margin(Margin::same(CARD_PAD as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if let Some(bottom) = bottom {
+                ui.set_min_height(bottom - CARD_PAD - 1.0 - ui.max_rect().top());
+            }
+            ui.spacing_mut().item_spacing.y = 10.0;
+            add(ui)
+        })
+        .inner
+}
+
+/// Small, spaced-out uppercase heading of a card.
+fn section_heading(ui: &mut Ui, text: &str) {
+    let job = LayoutJob::single_section(
+        text.to_owned(),
+        TextFormat {
+            font_id: font_bold(11.5),
+            extra_letter_spacing: 1.5,
+            color: with_alpha(Color32::WHITE, 0.45),
+            ..Default::default()
+        },
+    );
+    ui.add(egui::Label::new(job).selectable(false));
+}
+
+/// Muted label of fixed width in front of a row of controls.
+fn row_label(ui: &mut Ui, text: &str) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ROW_LABEL, 30.0), Sense::hover());
+    ui.painter().text(
+        rect.left_center(),
+        Align2::LEFT_CENTER,
+        text,
+        font_light(14.0),
+        with_alpha(Color32::WHITE, 0.55),
+    );
+}
+
+/// Half the gap between two switch cells.
+const CELL_GAP: f32 = 12.0;
+
+/// Width of a switch cell when two share a row of `ui`.
+fn cell_width(ui: &Ui) -> f32 {
+    (ui.available_width() - 2.0 * CELL_GAP) / 2.0
 }
 
 /// Clickable rect of `size` with a pointing-hand cursor, or hover-only when disabled.
@@ -662,29 +1134,29 @@ fn chip(ui: &mut Ui, text: &str, on: bool, enabled: bool) -> Response {
         .layout_no_wrap(text.to_owned(), font_bold(14.0), Color32::WHITE)
         .size()
         .x;
-    let (rect, response) = hit(ui, Vec2::new((text_width + 24.0).max(64.0), 32.0), enabled);
+    let (rect, response) = hit(ui, Vec2::new((text_width + 24.0).max(64.0), 30.0), enabled);
     let mut painter = ui.painter().clone();
     if !enabled {
         painter.multiply_opacity(0.35);
     }
     if on {
-        painter.rect_filled(rect, 16, with_alpha(Color32::WHITE, 0.92));
+        painter.rect_filled(rect, 15, with_alpha(Color32::WHITE, 0.92));
     } else {
         let fill = if enabled && response.hovered() {
             22
         } else {
             10
         };
-        painter.rect_filled(rect, 16, Color32::from_white_alpha(fill));
+        painter.rect_filled(rect, 15, Color32::from_white_alpha(fill));
         painter.rect_stroke(
             rect,
-            16,
+            15,
             Stroke::new(1.0, Color32::from_white_alpha(30)),
             egui::StrokeKind::Inside,
         );
     }
     let color = if on {
-        Color32::from_rgb(20, 20, 24)
+        DARK_TEXT
     } else {
         with_alpha(Color32::WHITE, 0.8)
     };
@@ -698,25 +1170,34 @@ fn chip(ui: &mut Ui, text: &str, on: bool, enabled: bool) -> Response {
     response
 }
 
-/// iOS-style on/off switch; the caller flips `on` when it is clicked. Dimmed and inert when
-/// not `enabled`.
-fn switch(ui: &mut Ui, on: &mut bool, enabled: bool) -> Response {
-    let (rect, response) = hit(ui, Vec2::new(40.0, 24.0), enabled);
-    let t = ui.ctx().animate_bool_with_time(response.id, *on, 0.15);
+/// A label with an iOS-style on/off switch at the right of a cell `width` wide; the whole cell
+/// is clickable, and the caller flips the setting when it is clicked. Dimmed and inert when not
+/// `enabled`.
+fn switch_cell(ui: &mut Ui, label: &str, on: bool, enabled: bool, width: f32) -> Response {
+    let (rect, response) = hit(ui, Vec2::new(width, 28.0), enabled);
+    let t = ui.ctx().animate_bool_with_time(response.id, on, 0.15);
     let mut painter = ui.painter().clone();
     if !enabled {
-        painter.multiply_opacity(0.35);
+        painter.multiply_opacity(0.4);
     }
-    let off = Color32::from_white_alpha(40);
+    let hover = enabled && response.hovered();
+    painter.text(
+        rect.left_center(),
+        Align2::LEFT_CENTER,
+        label,
+        font_light(15.0),
+        with_alpha(Color32::WHITE, if hover { 1.0 } else { 0.9 }),
+    );
+    let track = Rect::from_min_size(
+        Pos2::new(rect.right() - 40.0, rect.center().y - 12.0),
+        Vec2::new(40.0, 24.0),
+    );
+    let off = Color32::from_white_alpha(if hover { 56 } else { 40 });
     let lit = with_alpha(Color32::WHITE, 0.9);
-    painter.rect_filled(rect, 12, off.lerp_to_gamma(lit, t));
-    let x = rect.left() + 12.0 + t * (rect.width() - 24.0);
-    let knob = if t > 0.5 {
-        Color32::from_rgb(20, 20, 24)
-    } else {
-        Color32::WHITE
-    };
-    painter.circle_filled(Pos2::new(x, rect.center().y), 9.0, knob);
+    painter.rect_filled(track, 12, off.lerp_to_gamma(lit, t));
+    let x = track.left() + 12.0 + t * (track.width() - 24.0);
+    let knob = if t > 0.5 { DARK_TEXT } else { Color32::WHITE };
+    painter.circle_filled(Pos2::new(x, track.center().y), 9.0, knob);
     response
 }
 
@@ -725,13 +1206,13 @@ fn pill(ui: &mut Ui, text: &str, accent: bool, enabled: bool) -> Response {
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font_bold(15.0), Color32::WHITE);
-    let size = Vec2::new(galley.size().x + 40.0, 38.0);
+    let size = Vec2::new(galley.size().x + 40.0, PILL_HEIGHT);
     let (rect, response) = hit(ui, size, enabled);
     let hovered = enabled && response.hovered();
     let (fill, color) = if accent {
         (
             with_alpha(Color32::WHITE, if hovered { 1.0 } else { 0.9 }),
-            Color32::from_rgb(20, 20, 24),
+            DARK_TEXT,
         )
     } else {
         (
@@ -741,7 +1222,7 @@ fn pill(ui: &mut Ui, text: &str, accent: bool, enabled: bool) -> Response {
     };
     let alpha = if enabled { 1.0 } else { 0.35 };
     let painter = ui.painter();
-    painter.rect_filled(rect, 19, with_alpha(fill, alpha));
+    painter.rect_filled(rect, PILL_HEIGHT / 2.0, with_alpha(fill, alpha));
     painter.galley_with_override_text_color(
         rect.center() - galley.size() / 2.0,
         galley,
@@ -749,7 +1230,6 @@ fn pill(ui: &mut Ui, text: &str, accent: bool, enabled: bool) -> Response {
     );
     response
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,6 +1327,115 @@ mod tests {
         assert!(!shifted.awaiting_end);
     }
 
+    fn secs(n: f64) -> Duration {
+        Duration::from_secs_f64(n)
+    }
+
+    #[test]
+    fn dragging_a_handle_moves_one_end() {
+        let song = secs(200.0);
+        let range = (secs(10.0), secs(20.0));
+        assert_eq!(
+            drag_range(range, Grab::Start, -4.0, song),
+            (secs(6.0), secs(20.0))
+        );
+        assert_eq!(
+            drag_range(range, Grab::End, 7.5, song),
+            (secs(10.0), secs(27.5))
+        );
+        // No snapping: any position is kept.
+        assert_eq!(
+            drag_range(range, Grab::Start, 0.25, song),
+            (secs(10.25), secs(20.0))
+        );
+        // The ends of the song stop the handles.
+        assert_eq!(
+            drag_range(range, Grab::Start, -50.0, song),
+            (Duration::ZERO, secs(20.0))
+        );
+        let late = (secs(150.0), secs(190.0));
+        assert_eq!(drag_range(late, Grab::End, 30.0, song), (secs(150.0), song));
+    }
+
+    #[test]
+    fn handles_never_cross() {
+        let song = secs(200.0);
+        let range = (secs(10.0), secs(20.0));
+        assert_eq!(
+            drag_range(range, Grab::Start, 30.0, song),
+            (secs(20.0) - MIN_CLIP, secs(20.0))
+        );
+        assert_eq!(
+            drag_range(range, Grab::End, -30.0, song),
+            (secs(10.0), secs(10.0) + MIN_CLIP)
+        );
+    }
+
+    #[test]
+    fn handles_keep_the_three_minute_cap() {
+        let song = secs(400.0);
+        let range = (secs(100.0), secs(200.0));
+        assert_eq!(
+            drag_range(range, Grab::End, 150.0, song),
+            (secs(100.0), secs(100.0) + MAX_CLIP)
+        );
+        assert_eq!(
+            drag_range(range, Grab::Start, -150.0, song),
+            (secs(200.0) - MAX_CLIP, secs(200.0))
+        );
+    }
+
+    #[test]
+    fn dragging_the_middle_keeps_the_length() {
+        let song = secs(200.0);
+        let range = (secs(10.0), secs(20.0));
+        assert_eq!(
+            drag_range(range, Grab::Middle, 12.5, song),
+            (secs(22.5), secs(32.5))
+        );
+        assert_eq!(
+            drag_range(range, Grab::Middle, -30.0, song),
+            (Duration::ZERO, secs(10.0))
+        );
+        assert_eq!(
+            drag_range(range, Grab::Middle, 500.0, song),
+            (secs(190.0), song)
+        );
+    }
+
+    #[test]
+    fn nudges_step_further_with_shift() {
+        assert_eq!(nudge_step(false), ms(500));
+        assert_eq!(nudge_step(true), Duration::from_secs(5));
+        let range = (secs(10.0), secs(20.0));
+        let step = nudge_step(true).as_secs_f64();
+        assert_eq!(
+            drag_range(range, Grab::End, step, secs(200.0)),
+            (secs(10.0), secs(25.0))
+        );
+        assert_eq!(
+            drag_range(range, Grab::Start, -step, secs(200.0)),
+            (secs(5.0), secs(20.0))
+        );
+    }
+
+    #[test]
+    fn presses_grab_handles_or_the_range() {
+        let (s, e, reach) = (100.0, 300.0, 14.0);
+        assert_eq!(grab_at(105.0, s, e, reach), Some(Grab::Start));
+        assert_eq!(grab_at(290.0, s, e, reach), Some(Grab::End));
+        assert_eq!(grab_at(200.0, s, e, reach), Some(Grab::Middle));
+        assert_eq!(grab_at(50.0, s, e, reach), None);
+        assert_eq!(grab_at(400.0, s, e, reach), None);
+        // Bare track: the nearer handle.
+        assert_eq!(pick_grab(50.0, s, e, reach), Grab::Start);
+        assert_eq!(pick_grab(400.0, s, e, reach), Grab::End);
+        // Handles on top of each other split by side.
+        assert_eq!(grab_at(95.0, 100.0, 100.0, reach), Some(Grab::Start));
+        assert_eq!(grab_at(105.0, 100.0, 100.0, reach), Some(Grab::End));
+        assert_eq!(grab_at(100.5, 100.0, 102.0, reach), Some(Grab::Start));
+    }
+
     #[test]
     fn verdicts() {
         let s = |n| Duration::from_secs(n);
@@ -857,6 +1446,7 @@ mod tests {
         assert_eq!(Verdict::of(s(10), s(10), 1), Verdict::Empty);
         assert_eq!(Verdict::of(s(10), s(5), 1), Verdict::Empty);
         assert_eq!(Verdict::of(s(10), s(20), 0), Verdict::NoFormat);
+        assert_eq!(Verdict::of(s(10), s(10) + MIN_CLIP, 1), Verdict::Ready);
         assert!(Verdict::Long.can_export());
         assert!(!Verdict::NoFormat.can_export());
     }
@@ -891,7 +1481,8 @@ mod snapshot {
 
     /// Renders the panel and toasts over the Apple layout to the PNG named by
     /// `EXPORT_PANEL_SNAPSHOT`, or `export-panel.png` in the temp folder.
-    /// `EXPORT_PANEL_STYLE=spotify` picks the Spotify style instead of Vibrant.
+    /// `EXPORT_PANEL_STYLE=spotify` picks the Spotify style instead of Vibrant, and
+    /// `EXPORT_PANEL_LYRICS=none` shows a song without lyrics.
     #[test]
     #[ignore = "needs a GPU"]
     fn panel_snapshot() {
@@ -916,7 +1507,10 @@ mod snapshot {
                 format!("[00:{:02}.00]{text}\n", 20 + i * 3)
             })
             .collect();
-        let lyrics = LyricsState::Found(Arc::new(parse_lrc(&lrc)));
+        let lyrics = match std::env::var("EXPORT_PANEL_LYRICS").as_deref() {
+            Ok("none") => LyricsState::NotFound,
+            _ => LyricsState::Found(Arc::new(parse_lrc(&lrc))),
+        };
         let mut panel = ExportPanel::new(
             song.clone(),
             None,
@@ -924,14 +1518,27 @@ mod snapshot {
             Duration::from_secs(30),
             Marks::default(),
             false,
-            match std::env::var("EXPORT_PANEL_STYLE").as_deref() {
-                Ok("spotify") => Style::Spotify,
-                _ => Style::Vibrant,
+            LiveLook {
+                style: match std::env::var("EXPORT_PANEL_STYLE").as_deref() {
+                    Ok("spotify") => Style::Spotify,
+                    _ => Style::Vibrant,
+                },
+                motion: true,
+                artist_bg: HashMap::new(),
+                tint: true,
+                skip_buttons: true,
+                lyrics_align: LyricsAlign::Right,
+                lyrics_flow: LyricsFlow::Stacked,
             },
-            true,
-            HashMap::new(),
         );
-        panel.pick(6, false);
+        if panel.synced().is_some() {
+            panel.selection = None;
+            panel.pick(4, false);
+            panel.pick(8, false);
+            panel.scroll_to = Some(6);
+        } else {
+            panel.set_range((Duration::from_secs(95), Duration::from_millis(112_500)));
+        }
         let mut formats = vec![Aspect::Portrait, Aspect::Square];
         let mut quality = Quality::default();
         let mut toasts = Toasts::default();
@@ -967,6 +1574,10 @@ mod snapshot {
                         now: chrono::Local::now(),
                         capture: false,
                         motion: false,
+                        tint: true,
+                        skip_buttons: true,
+                        lyrics_align: LyricsAlign::Right,
+                        lyrics_flow: LyricsFlow::Stacked,
                     };
                     apple::draw(ui, &view);
                     let ctx = ui.ctx().clone();

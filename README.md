@@ -21,12 +21,22 @@ Three layouts are available. `l` cycles through them at runtime (Apple → Vibra
 
 - **Apple Music-style** (default): a blurred album art backdrop, rounded album art with the title, "Artist — Album" and a progress bar below it, clickable previous/play-pause/next buttons, a seekable progress bar, and a time-synced lyrics column on the right. The active lyric line is highlighted, the column scrolls smoothly, and lines far from the active one fade out. An optional date/clock overlay can be toggled with `t`.
 - **Vibrant**: modelled on Apple Music's colourful lyrics view. The backdrop is bright: enlarged, heavily blurred copies of the album art with a faint gradient of its main colours over them, cross-fading between songs. Light covers stay light; a soft dark halo behind the text, and a mild wash on very light art, keep white text readable. Square album art sits on the left with the elapsed and remaining time, a thin seekable progress bar, and the title and "Artist — Album" centred beneath it, and the time-synced lyrics are on the right. There are no transport buttons; clicking anywhere toggles play/pause. Tall and square windows stack the art above the lyrics. The `t` clock overlay works here too.
-- **Spotify-style**: modelled on the Spotify desktop client's fullscreen mode, with the artist's background image (see [below](#obtaining-and-using-artist-background-images-from-spotify)). The album art, with rounded corners and a soft shadow, sits on the left with the large title and artist beside it. A rounded-square play/pause button, styled after the Quickshell (illogical-impulse) media widget, sits at the far right with its bottom level with the art's. Along the bottom of the screen runs a thin seekable wavy progress bar with previous and next buttons at its ends, the previous button level with the art's left edge and the next button with the play button's right edge: the elapsed part is a sine wave that moves while playing and flattens when paused, followed by a vertical bar handle and the flat remaining track; click or drag it to seek. The icons are the filled, rounded Material Symbols, drawn as vector shapes. Clicking anywhere else toggles play/pause. Text, icons, the bar and the button take a subtle tint from the cover (see [Colours](#spotify-colours)). Time-synced lyrics show as three lines in the upper part of the screen, centred over the space right of the art: the previous line faint, the active line bold and bright, and the next line faint below it. On each new line they scroll up smoothly, the outgoing line fading out at the top and the incoming one fading in at the bottom; long lines wrap. `• • •` stands for the time before the first line and for instrumental gaps. Unsynced lyrics advance through the song at an even pace. For the last 10% of a song, a glass "Up next" card slides into the top-right corner with the next song's cover, title and artist, and a thin bar counting down the rest of the current song. While the card shows, the lyrics move down to clear it. The `t` clock sits in the same corner while the card is hidden.
+- **Spotify-style**: modelled on the Spotify desktop client's fullscreen mode, with the artist's background image (see [below](#obtaining-and-using-artist-background-images-from-spotify)). The album art, with rounded corners and a soft shadow, sits on the left with the large title and artist beside it. A rounded-square play/pause button, styled after the Quickshell (illogical-impulse) media widget, sits at the far right with its bottom level with the art's. Along the bottom of the screen runs a thin seekable wavy progress bar with previous and next buttons at its ends, the previous button level with the art's left edge and the next button with the play button's right edge; `s` hides the buttons, and the bar then runs from the art's left edge to the play button's right edge. The elapsed part of the bar is a sine wave that moves while playing and flattens when paused, followed by a vertical bar handle and the flat remaining track; click or drag it to seek. The icons are the filled, rounded Material Symbols, drawn as vector shapes. Clicking anywhere else toggles play/pause. Text, icons, the bar and the button take their colours from the cover (see [Album colours](#album-colours)). The lyrics sit in the upper part of the screen in bold at the same size as in the Apple layout, without a shadow; lines differ only in brightness. `j` cycles their alignment: right-aligned in the right half of the screen with their right edge on the play button's right edge (the default), left-aligned in the left half with their left edge on the art's left edge, or centred over the space right of the art at the same width. Long lines wrap rather than cross the middle of the screen; when wrapped lines do not fit above the art, the lines furthest from it fade out. `o` switches between two flows for time-synced lyrics:
+  - **Stacked** (default), after Apple Music: the active line sits at the top, brightest, with the next three lines below it, each fainter than the one above. On each new line the stack slides up, the outgoing line fading out as it leaves and the next one brightening into the top slot, with a slight vertical smear while the lines move.
+  - **Classic**: three lines, the previous one faint above the active one and the next one faint below it. On each new line they scroll up smoothly, the outgoing line fading out at the top and the incoming one fading in at the bottom.
+
+  `• • •` stands for the time before the first line and for instrumental gaps. Unsynced lyrics use the classic flow and advance through the song at an even pace. For the last 10% of a song, the next song slides into the top-right corner: its rounded cover with its title and artist beside it, and a thin bar below counting down the rest of the current song, drawn straight over the backdrop. While it shows, lyrics that reach under that corner move down to clear it. The `t` clock sits in the same corner while the next song is hidden.
 - **Moving backdrop**: enlarged, blurred copies of the album art drift across the screen, turn, swell and blend into each other, like Apple Music's animated artwork. It keeps moving while playback is paused. Toggle it with `b`, or start without it with `MPD_DISPLAY_MOTION=off`; with it off, the backdrop is still.
 - **Backgrounds**: `a` toggles the artist background for the current layout. When it is on and `artists/` has an image for the song's artist, the layout uses that image: tinted dark in the Spotify and Apple layouts with a vignette in the Apple one, and lighter in the Vibrant layout, with a halo behind the text. With motion on, the image slowly pans and zooms. When it is off, or there is no image, each layout uses its own backdrop: blurred album art for Spotify (moving when motion is on, darkened to match), dark blurred art for Apple and the colourful art for Vibrant. The setting is kept per layout for the session; it starts on for Spotify and off for Apple and Vibrant, and `MPD_DISPLAY_ARTIST_BG` sets the starting value for all of them.
 
-### Spotify colours
-The Spotify layout takes its colours from the album art. The cover's average colour is blended into a small Material 3 dark scheme (primary, on-primary, secondary container and text colours), the same way the Quickshell media widget adapts its colours. The title, lyrics, clock and Up next card text are near-white with a hint of the art's hue; the artist uses the scheme's muted text colour; the progress bar uses the primary colour for the elapsed part and handle and the secondary container colour for the rest of the track; and the play/pause button is filled with the primary colour while playing and the secondary container colour while paused. Every colour keeps a minimum contrast against a dark backdrop, so light, dark and very saturated covers stay readable, and the colours cross-fade along with the art when the song changes.
+### Album colours
+Every layout takes its colours from the album art. The cover's average colour is blended into a small Material 3 dark scheme (primary, on-primary, secondary container and text colours), the same way the Quickshell media widget adapts its colours. The main text is a light pastel of the cover's hue, still the brightest text on screen; grey covers give near-white text.
+
+- **Spotify**: the title, active lyric line, clock and the next song's title use the pastel, and the other lyric lines are fainter versions of it; the artist uses the scheme's muted text colour; the progress bar uses the primary colour for the elapsed part and handle and the secondary container colour for the rest of the track; and the play/pause button is filled with the primary colour while playing and the secondary container colour while paused.
+- **Apple**: the title, active lyric line, filled part of the progress bar and all buttons use the pastel; "Artist — Album", the other lyric lines and the times use a slightly deeper shade of it, at their usual opacity.
+- **Vibrant**: as in the Apple layout, but the pastel is mixed towards white until the text keeps at least 80% of white text's contrast against the bright backdrop (70% for the fainter lines).
+
+Every colour keeps a minimum contrast against its backdrop, so light, dark and very saturated covers stay readable, and the colours cross-fade along with the art when the song changes. `k` turns album colours off: the Apple and Vibrant layouts are then plain white, and the Spotify layout uses a neutral grey scheme with white text. `MPD_DISPLAY_TINT=off` starts with them off.
 
 ## Features
 - Toggleable fullscreen with the `f` or `F11` key
@@ -52,6 +62,10 @@ The Spotify layout takes its colours from the album art. The cover's average col
 | `t` | Toggle date/clock overlay |
 | `b` | Toggle the moving backdrop |
 | `a` | Toggle the artist background for the current layout |
+| `k` | Toggle album colours |
+| `s` | Toggle the previous/next buttons beside the Spotify layout's progress bar |
+| `j` | Cycle the Spotify layout's lyric alignment (left → centre → right) |
+| `o` | Switch the Spotify layout's lyric flow (classic ↔ stacked) |
 | `e` | Open/close the lyric clip export panel |
 | `[` / `]` | Mark the clip in-point / out-point at the current playback position |
 | `Esc` / `q` | Quit |
@@ -93,6 +107,10 @@ target/release/mpd-display-rs
 | `MPD_DISPLAY_LYRICS` | `on` or `off`. Defaults to `on`. |
 | `MPD_DISPLAY_MOTION` | `on` or `off`: the moving backdrop. Defaults to `on`. |
 | `MPD_DISPLAY_ARTIST_BG` | `on` or `off`: the artist background in every layout. Defaults to on for the Spotify layout and off for the others. |
+| `MPD_DISPLAY_TINT` | `on` or `off`: [album colours](#album-colours) for text, icons and bars. Defaults to `on`. |
+| `MPD_DISPLAY_SKIP_BUTTONS` | `on` or `off`: previous/next buttons beside the Spotify layout's progress bar. Defaults to `on`. |
+| `MPD_DISPLAY_LYRICS_ALIGN` | `left`, `center` or `right`: alignment of the Spotify layout's lyrics. Defaults to `right`. |
+| `MPD_DISPLAY_LYRICS_FLOW` | `classic` or `stacked`: how the Spotify layout's synced lyrics move. Defaults to `stacked`. |
 | `MPD_DISPLAY_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable LRCLIB lookups. Enabled by default. |
 
 ## Exporting lyric clips
@@ -105,21 +123,32 @@ Renders a share-ready MP4 of the Apple, Vibrant or Spotify layout (lyrics, album
 | 9:16 (default) | 1080×1920 |
 | 1:1 | 1080×1080 |
 
-Pick one or several; each becomes its own file. Portrait and square have their own layouts, which are also used when the live window has that shape. The Spotify style renders 16:9 only.
+Pick one or several with the **Size** chips; each becomes its own file. Portrait and square have their own layouts, which are also used when the live window has that shape. The Spotify style renders 16:9 only.
 
-### Style
-The panel's **Dark**, **Vibrant** and **Spotify** chips choose the look of the clip: the dark Apple layout over blurred art, the colourful Vibrant layout, or the Spotify layout with its three-line lyrics (and the Up next card when the clip reaches the last 10% of the song). The panel starts on the style of the layout on screen. The **Motion** switch exports the moving backdrop, or a still one when off; it starts at the display's current setting. The **Artist background** switch uses the artist image as the background; it starts at the live setting of the chosen style's layout and is disabled, with a "no artist image" note, when `artists/` has no image for the song's artist.
+### The panel
+Press `e` to open the export panel. It has two columns: **Clip** on the left for the range, and **Look** and **Output** on the right, with Cancel and Export below them. Narrow windows stack the columns.
+
+### Look
+The **Style** chips (**Dark**, **Vibrant** and **Spotify**) choose the look of the clip: the dark Apple layout over blurred art, the colourful Vibrant layout, or the Spotify layout (with the next song in the corner when the clip reaches the last 10% of the song). The panel starts on the style of the layout on screen. Everything else in the section starts at the display's current setting:
+- **Lyrics** (**Left**, **Center**, **Right**) and **Flow** (**Classic**, **Stacked**): the Spotify style's lyric alignment and flow; disabled for the other styles.
+- **Motion**: the moving backdrop, or a still one when off.
+- **Artist background**: the artist image as the background; it starts at the live setting of the chosen style's layout and is disabled, with a note, when `artists/` has no image for the song's artist.
+- **Album colours**: [album colours](#album-colours), or the plain look when off.
+
+Spotify-style clips also follow the display's skip-button setting (`s`).
 
 ### Choosing the range
-Press `e` to open the export panel.
+The lines inside the clip are highlighted in the lyric list, and the range slider below it spans the whole song, with a tick at the start of every lyric line. All three controls stay in sync:
 - Click the first lyric line, then the last (shift-click also works). The start snaps to 0.5 s before the first line, and the end to the start of the line after the last.
-- Nudge the start and end in 0.5 s steps in the panel.
+- Drag either handle of the range slider to move that end freely, or drag the highlighted part between them to move the whole range and keep its length. Pressing the bare track brings the nearer handle there. The handles stay at least 0.5 s apart and within the song.
+- Nudge the start and end with − and +: 0.5 s per click, 5 s with Shift held.
 - Alternatively, mark while listening: `[` sets the in-point and `]` the out-point, then press `e`.
-- A clip can be at most 3 minutes long.
+- A clip can be at most 3 minutes long; dragging and nudging keep the range within that.
+- Songs without synced lyrics show a note in place of the list; the slider and nudges still work.
 - `Esc` closes the panel.
 
 ### Quality
-The **High quality** and **Small file** chips pick the encoder settings; the panel remembers the choice until the display restarts and shows a rough size estimate of the files next to the chips.
+The **Quality** chips, **High** and **Small**, pick the encoder settings; the panel remembers the choice until the display restarts and shows a rough size estimate of the files next to the chips. Notes below them say when the Spotify style limits the sizes to 16:9, when there is no artist image, when no audio file was found, and when the range cannot be exported.
 
 | Preset | Video | Audio | Target |
 | --- | --- | --- | --- |
@@ -129,7 +158,7 @@ The **High quality** and **Small file** chips pick the encoder settings; the pan
 Both presets use x264's `medium` preset with `-tune film` and auto-variance adaptive quantisation (`aq-mode=3`), which keeps dark, soft gradients from flattening into bands. Frames are converted to limited-range BT.709 YUV 4:2:0 with full chroma interpolation and tagged as BT.709, so colours match the display in players and browsers. Exported frames also carry a faint static grain (at most 2 of 255 levels, added over the blurred-art and gradient backdrops only, never over text, art or artist photos) that keeps the encoder from banding them; the live display has none.
 
 ### Audio
-Audio is cut from the song's file in the MPD music directory, with short fades, and can be toggled in the panel. The music directory comes from `MPD_MUSIC_DIR`, else `music_directory` in `$XDG_CONFIG_HOME/mpd/mpd.conf` (`~/.config/mpd/mpd.conf` when unset), `~/.mpdconf`, or `/etc/mpd.conf`. If the file cannot be found, the clip is exported without audio and the toast says so.
+Audio is cut from the song's file in the MPD music directory, with short fades, and can be toggled with the **Audio** switch. The music directory comes from `MPD_MUSIC_DIR`, else `music_directory` in `$XDG_CONFIG_HOME/mpd/mpd.conf` (`~/.config/mpd/mpd.conf` when unset), `~/.mpdconf`, or `/etc/mpd.conf`. If the file cannot be found, the clip is exported without audio and the toast says so.
 
 ### Output
 Files are written to `~/Videos/mpd-display/` (override with `MPD_DISPLAY_EXPORT_DIR`) and named `<Artist> - <Title> (1m05-1m35) 9x16.mp4`, with ` (2)`, ` (3)`, ... appended if the name is taken. Exports run one at a time. A toast in the bottom-right corner shows progress, its × cancels the export, and clicking the "Saved" toast opens the folder.

@@ -1,15 +1,14 @@
 //! Layout modelled on the Spotify desktop client's fullscreen mode, with controls styled after
 //! Quickshell's media widget: a rounded-square play/pause button level with the bottom of the
-//! album art, and a full-width wavy seek bar between previous and next buttons.
+//! album art, and a full-width wavy seek bar, optionally between previous and next buttons.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use egui::epaint::{RectShape, Shadow};
-use egui::text::{LayoutJob, TextFormat, TextWrapping};
+use egui::epaint::RectShape;
+use egui::text::{LayoutJob, TextWrapping};
 use egui::{
-    Align, Align2, Color32, CursorIcon, FontId, Galley, Id, Painter, Pos2, Rect, Sense, Stroke,
-    StrokeKind, Vec2,
+    Align, Align2, Color32, CursorIcon, FontId, Galley, Id, Painter, Pos2, Rect, Sense, Vec2,
 };
 use mpd_display_rs::lyrics::{Lyrics, LyricsState};
 
@@ -18,9 +17,10 @@ use super::backdrop;
 use super::icons::{paint_icon, Icon};
 use super::scheme::{mix, Scheme};
 use super::wavy::{self, BarColors, Wavy};
-use super::widgets::{ease, lerp, paint_text_shadow, seek_input};
-use super::{cover_rect, fit_text, font_bold, font_light, with_alpha, View, FULL_UV};
+use super::widgets::{ease, lerp, paint_smeared_galley, seek_input};
+use super::{cover_rect, fit_text, font_bold, with_alpha, View, FULL_UV};
 use crate::art::ArtTextures;
+use crate::config::{LyricsAlign, LyricsFlow};
 use crate::player::{Command, PlayState, SongInfo};
 
 const BACKGROUND_IMAGE_TINT: Color32 = Color32::from_rgb(75, 75, 75);
@@ -28,13 +28,21 @@ const BACKGROUND: Color32 = Color32::from_rgb(50, 50, 50);
 
 /// Shown in place of an empty lyric line and before the first one.
 const GAP_TEXT: &str = "• • •";
-/// Seconds for the lyrics to scroll by one line.
+/// Seconds for the classic lyrics to scroll by one line.
 const LYRICS_SCROLL: f64 = 0.6;
+/// Seconds for the stacked lyrics to slide up by one line.
+const STACK_SCROLL: f64 = 0.4;
+/// Opacity of the active stacked line and of the three below it; the next step is gone.
+const STACK_ALPHA: [f32; 5] = [1.0, 0.55, 0.35, 0.15, 0.0];
+/// Vertical smear of moving stacked lines per line-per-second of scroll speed, relative to
+/// the font size, and its ceiling.
+const SMEAR: f32 = 0.08;
+const MAX_SMEAR: f32 = 0.4;
 /// Opacity of the line above and below the active one.
 const PREVIOUS_ALPHA: f32 = 0.28;
 const NEXT_ALPHA: f32 = 0.35;
-/// Size of the lines around the active one relative to it.
-const SIDE_SCALE: f32 = 0.8;
+/// Size of the lines around the active one relative to it, as in the Apple layout.
+const SIDE_SCALE: f32 = 0.9;
 
 /// Song progress from which the Up next card shows.
 const UP_NEXT_AT: f32 = 0.9;
@@ -64,9 +72,12 @@ struct Block {
     title_size: f32,
     /// Icon size of the previous and next buttons, which are as tall as the controls row.
     icon: f32,
+    /// Whether the previous and next buttons show.
+    skip_buttons: bool,
     previous: Rect,
     next: Rect,
-    /// The seek bar's row between the previous and next buttons.
+    /// The seek bar's row, between the previous and next buttons when they show and from
+    /// margin to margin otherwise.
     bar: Rect,
     play: Rect,
     /// Thickness of the seek bar's wave and track.
@@ -74,7 +85,7 @@ struct Block {
 }
 
 impl Block {
-    fn new(screen: Rect) -> Self {
+    fn new(screen: Rect, skip_buttons: bool) -> Self {
         let (w, h) = (screen.width(), screen.height());
         let unit = w.min(h);
         let art_size = unit / 3.0 * 1.12;
@@ -105,15 +116,20 @@ impl Block {
             Vec2::splat(icon),
         );
         let gap = unit * 0.008;
-        let bar = Rect::from_x_y_ranges(
-            previous.right() + gap..=(next.left() - gap).max(previous.right() + gap),
-            row.y_range(),
-        );
+        let bar = if skip_buttons {
+            Rect::from_x_y_ranges(
+                previous.right() + gap..=(next.left() - gap).max(previous.right() + gap),
+                row.y_range(),
+            )
+        } else {
+            row
+        };
         Self {
             art,
             title,
             title_size: unit / 9.0 * 0.9,
             icon,
+            skip_buttons,
             previous,
             next,
             bar,
@@ -138,7 +154,7 @@ impl Block {
 pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
     let screen = ui.max_rect();
     let painter = ui.painter_at(screen);
-    let block = Block::new(screen);
+    let block = Block::new(screen, view.skip_buttons);
     let background =
         (!view.capture).then(|| ui.interact(screen, Id::unique("spotify-layout"), Sense::click()));
     let command = paint(ui, &painter, screen, &block, view);
@@ -159,7 +175,7 @@ fn paint(
     let (w, h) = (screen.width(), screen.height());
     let origin = screen.min;
     let player = view.player;
-    let scheme = view.art.scheme();
+    let scheme = view.scheme();
     let id = Id::unique("spotify-controls");
 
     painter.rect_filled(screen, 0.0, BACKGROUND);
@@ -218,26 +234,34 @@ fn paint(
         );
     }
 
-    // Lyrics centred over the space right of the art, in the upper part of the screen. While
-    // the Up next card shows they move down to clear it, leaving room for the dimmed line over
-    // a wrapped active one.
+    // Lyrics in the upper part of the screen, aligned as the view asks. Where they reach under
+    // the top-right corner they stay below the clock, and move down below the Up next block
+    // while it shows.
     let clock_h = painter
         .layout_no_wrap("0".into(), clock_font, Color32::WHITE)
         .size()
         .y;
-    let top = corner.y + clock_h + h * 0.06;
+    let x_range = lyrics_x_range(screen, art_rect, view.lyrics_align);
+    let under_corner = x_range.max > corner.x - card.width - w * 0.02;
+    let top = if under_corner {
+        corner.y + clock_h + h * 0.06
+    } else {
+        origin.y + h * 0.06
+    };
     let bottom = art_rect.top() - h * 0.03;
-    let below_card = (corner.y + card.height(painter) + h * 0.06 + bottom) / 2.0;
+    let card_t = if under_corner { card_t } else { 0.0 };
+    let below_card = (corner.y + card.height() + h * 0.06 + bottom) / 2.0;
     let center =
         lerp(origin.y + h * LYRICS_CENTER, below_card, ease(card_t)).clamp(top, bottom.max(top));
-    let width = (screen.right() - w / 16.0 - art_rect.right()) * 0.9;
-    if bottom > top && width > 0.0 {
-        let rect = Rect::from_center_size(
-            Pos2::new((art_rect.right() + screen.right() - w / 16.0) / 2.0, center),
-            Vec2::new(width, bottom - top),
+    if bottom > top && x_range.span() > 0.0 {
+        // The Apple layout's lyric size at the same window size.
+        let base = (h / 22.0).min(x_range.span() / 14.0);
+        let card_bottom = corner.y + card.height() + h * 0.04;
+        let area = Rect::from_x_y_ranges(
+            x_range,
+            lerp(top, card_bottom, ease(card_t)).min(bottom)..=bottom,
         );
-        let base = (h / 21.5).min(w / 24.0) * 0.82;
-        paint_lyrics(ui, painter, rect, base, view, scheme.text);
+        paint_lyrics(ui, painter, area, center, base, view, scheme.text);
     }
     command
 }
@@ -294,7 +318,7 @@ fn paint_controls(
     wavy::paint(painter, block.bar, shown, &style, &colors);
 
     // Previous and next
-    for (icon, rect, cmd, key) in [
+    let skip_buttons = [
         (
             Icon::Previous,
             block.previous,
@@ -302,7 +326,8 @@ fn paint_controls(
             "previous",
         ),
         (Icon::Next, block.next, Command::Next, "next"),
-    ] {
+    ];
+    for (icon, rect, cmd, key) in skip_buttons.into_iter().filter(|_| block.skip_buttons) {
         let hover = hover_button(ui, view, rect, id.with(key), cmd, &mut command);
         if hover > 0.0 {
             painter.circle_filled(
@@ -455,19 +480,25 @@ pub struct Scroll {
 }
 
 impl Scroll {
-    /// Scroll position at time `now`.
-    pub fn at(self, now: f64) -> f32 {
-        let t = ((now - self.since) / LYRICS_SCROLL) as f32;
+    /// Scroll position at time `now`, for a scroll lasting `secs`.
+    pub fn at(self, now: f64, secs: f64) -> f32 {
+        let t = ((now - self.since) / secs) as f32;
         lerp(self.from, self.to, ease(t))
     }
 
-    /// Retargets the scroll to `to` at `now`, continuing from where it is. Jumps of more than
-    /// a couple of lines, as after a seek, only animate the last line.
-    pub fn retarget(self, to: f32, now: f64) -> Self {
+    /// Scroll speed at time `now` in lines per second, for a scroll lasting `secs`.
+    pub fn speed(self, now: f64, secs: f64) -> f32 {
+        const DT: f64 = 0.01;
+        (self.at(now, secs) - self.at(now - DT, secs)) / DT as f32
+    }
+
+    /// Retargets a scroll lasting `secs` to `to` at `now`, continuing from where it is. Jumps
+    /// of more than a couple of lines, as after a seek, only animate the last line.
+    pub fn retarget(self, to: f32, now: f64, secs: f64) -> Self {
         if to == self.to {
             return self;
         }
-        let here = self.at(now);
+        let here = self.at(now, secs);
         let from = if (to - here).abs() > 2.0 {
             to - (to - here).signum()
         } else {
@@ -481,19 +512,95 @@ impl Scroll {
     }
 }
 
-/// Lays out `text` centred on x = 0, wrapped at `width`.
-fn centered(painter: &Painter, text: &str, font: FontId, width: f32) -> Arc<Galley> {
+/// Horizontal extent of the lyrics, from the side margin to the middle of the screen so lines
+/// never cross it: the left half from the art's left edge, the right half up to the play
+/// button's right edge, or as wide centred over the space right of the art.
+fn lyrics_x_range(screen: Rect, art: Rect, align: LyricsAlign) -> egui::Rangef {
+    let margin = screen.width() / 16.0;
+    let (left, right, middle) = (
+        screen.left() + margin,
+        screen.right() - margin,
+        screen.center().x,
+    );
+    let width = (middle - left).max(0.0);
+    match align {
+        LyricsAlign::Left => egui::Rangef::new(left, middle),
+        LyricsAlign::Right => egui::Rangef::new(middle, right),
+        LyricsAlign::Center => {
+            let center = (art.right() + right) / 2.0;
+            egui::Rangef::new(center - width / 2.0, center + width / 2.0)
+        }
+    }
+}
+
+/// Text alignment within the lyrics' extent.
+fn lyrics_halign(align: LyricsAlign) -> Align {
+    match align {
+        LyricsAlign::Left => Align::Min,
+        LyricsAlign::Center => Align::Center,
+        LyricsAlign::Right => Align::Max,
+    }
+}
+
+/// Lays out `text` aligned by `halign` on x = 0, wrapped at `width`.
+fn aligned(painter: &Painter, text: &str, font: FontId, width: f32, halign: Align) -> Arc<Galley> {
     let mut job = LayoutJob::simple(text.to_owned(), font, Color32::WHITE, width);
-    job.halign = Align::Center;
+    job.halign = halign;
     painter.layout_job(job)
 }
 
-/// Three centred lyric lines: the previous one dimmed above the active one and the next one
-/// below, scrolling up as the song moves on, in `color`. `base` is the active line's font size.
+/// Opacity of a stacked entry `distance` lines below the scroll position (negative above it):
+/// full on the active line, fading over the three below it, and gone once it has moved a line
+/// up.
+pub fn stack_alpha(distance: f32) -> f32 {
+    if distance <= -1.0 {
+        0.0
+    } else if distance < 0.0 {
+        (1.0 + distance).powi(2)
+    } else {
+        let i = distance.floor() as usize;
+        match (STACK_ALPHA.get(i), STACK_ALPHA.get(i + 1)) {
+            (Some(&a), Some(&b)) => lerp(a, b, distance.fract()),
+            _ => 0.0,
+        }
+    }
+}
+
+/// The eased scroll stored under `id`, retargeted to `target` at `now`; requests a repaint
+/// while it moves.
+fn scroll_to(ctx: &egui::Context, id: Id, target: f32, now: f64, secs: f64) -> Scroll {
+    let scroll = ctx.data(|d| d.get_temp::<Scroll>(id)).map_or(
+        Scroll {
+            from: target,
+            to: target,
+            since: now,
+        },
+        |s| s.retarget(target, now, secs),
+    );
+    ctx.data_mut(|d| d.insert_temp(id, scroll));
+    if scroll.at(now, secs) != target {
+        ctx.request_repaint();
+    }
+    scroll
+}
+
+/// X position of galleys aligned by `halign` in `rect`.
+fn aligned_x(rect: Rect, halign: Align) -> f32 {
+    match halign {
+        Align::Min => rect.left(),
+        Align::Center => rect.center().x,
+        Align::Max => rect.right(),
+    }
+}
+
+/// The lyrics in `color` within `area`, aligned as the view asks: three lines around height
+/// `center`, or synced lyrics in the stacked flow hanging from the top. `base` is the active
+/// line's font size.
 fn paint_lyrics(
     ui: &egui::Ui,
     painter: &Painter,
-    rect: Rect,
+    area: Rect,
+    center: f32,
     base: f32,
     view: &View,
     color: Color32,
@@ -509,38 +616,71 @@ fn paint_lyrics(
         return;
     }
     let synced = matches!(lyrics.as_ref(), Lyrics::Synced(_));
-
-    let ctx = ui.ctx();
-    let now = ctx.input(|i| i.time);
     let id = Id::unique("spotify-lyrics").with(&song.file);
-    let target = active as f32;
-    let scroll = ctx.data(|d| d.get_temp::<Scroll>(id)).map_or(
-        Scroll {
-            from: target,
-            to: target,
-            since: now,
-        },
-        |s| s.retarget(target, now),
-    );
-    ctx.data_mut(|d| d.insert_temp(id, scroll));
-    let position = scroll.at(now);
-    if position != target {
-        ctx.request_repaint();
+    let halign = lyrics_halign(view.lyrics_align);
+    let lines = Lines {
+        entries: &entries,
+        active,
+        base,
+        halign,
+        color,
+    };
+    if synced && view.lyrics_flow == LyricsFlow::Stacked {
+        paint_stacked(ui, painter, area, &lines, id.with("stacked"));
+    } else {
+        paint_classic(ui, painter, area, center, &lines, synced, id);
     }
+}
+
+/// Lyric entries to draw and how.
+struct Lines<'a> {
+    entries: &'a [String],
+    active: usize,
+    /// Font size of the active line.
+    base: f32,
+    halign: Align,
+    color: Color32,
+}
+
+/// Three lines around height `center`: the previous one dimmed above the active one and the
+/// next one below, scrolling up as the song moves on. Wrapped lines that would leave `rect`
+/// move the three back inside it. `synced` lyrics start with a gap marker; the scroll is kept
+/// under `id`.
+fn paint_classic(
+    ui: &egui::Ui,
+    painter: &Painter,
+    rect: Rect,
+    center: f32,
+    lines: &Lines,
+    synced: bool,
+    id: Id,
+) {
+    let Lines {
+        entries,
+        active,
+        base,
+        halign,
+        color,
+    } = *lines;
+    let now = ui.ctx().input(|i| i.time);
+    let position =
+        scroll_to(ui.ctx(), id, active as f32, now, LYRICS_SCROLL).at(now, LYRICS_SCROLL);
+    let x = aligned_x(rect, halign);
 
     // Entries around the position, stacked from the top with their sizes for this frame.
     let first = (position.floor() as isize - 2).max(0) as usize;
     let last = (position.ceil() as usize + 2).min(entries.len() - 1);
-    let gap = base * 0.95;
+    let gap = base * 0.75;
     let mut y = 0.0;
     let mut laid_out = Vec::with_capacity(last + 1 - first);
     for (i, text) in entries.iter().enumerate().take(last + 1).skip(first) {
         let distance = i as f32 - position;
-        let galley = centered(
+        let galley = aligned(
             painter,
             text,
             font_bold(base * trio_scale(distance)),
             rect.width(),
+            halign,
         );
         let height = galley.size().y;
         laid_out.push((distance, y, galley));
@@ -559,7 +699,23 @@ fn paint_lyrics(
         _ => 0.0,
     };
 
-    let anchor = rect.center().y;
+    // Keep the visible lines inside the area; when they do not fit, the bottom wins and lines
+    // above the area fade out.
+    let visible = laid_out
+        .iter()
+        .filter(|(distance, ..)| trio_alpha(*distance) > 0.05)
+        .map(|(_, top, g)| (center + top - here, center + top - here + g.size().y));
+    let (ext_top, ext_bottom) = visible.fold((f32::MAX, f32::MIN), |(t, b), (top, bottom)| {
+        (t.min(top), b.max(bottom))
+    });
+    let shift = if ext_top <= ext_bottom {
+        (rect.top() - ext_top)
+            .max(0.0)
+            .min(rect.bottom() - ext_bottom)
+    } else {
+        0.0
+    };
+    let anchor = center + shift;
     for (i, (distance, top, galley)) in laid_out.into_iter().enumerate() {
         let mut a = trio_alpha(distance);
         // The marker before the first line only shows while it is the active entry.
@@ -569,9 +725,69 @@ fn paint_lyrics(
         if a <= 0.0 {
             continue;
         }
-        let pos = Pos2::new(rect.center().x, anchor + top - here);
-        paint_text_shadow(painter, pos, &galley, a * 0.6, base * 0.12);
-        painter.galley_with_override_text_color(pos, galley, with_alpha(color, a));
+        let pos = Pos2::new(x, anchor + top - here);
+        let above = ((pos.y + galley.size().y - rect.top()) / galley.size().y).clamp(0.0, 1.0);
+        let a = a * above * above;
+        if a > 0.0 {
+            painter.galley_with_override_text_color(pos, galley, with_alpha(color, a));
+        }
+    }
+}
+
+/// Synced lyrics hanging from the top of `rect`: the active line brightest, the three after
+/// it fading out below. On a new line the stack slides up, the outgoing line fading as
+/// it leaves and the lines smearing while they move.
+fn paint_stacked(ui: &egui::Ui, painter: &Painter, rect: Rect, lines: &Lines, id: Id) {
+    let Lines {
+        entries,
+        active,
+        base,
+        halign,
+        color,
+    } = *lines;
+    let now = ui.ctx().input(|i| i.time);
+    let scroll = scroll_to(ui.ctx(), id, active as f32, now, STACK_SCROLL);
+    let position = scroll.at(now, STACK_SCROLL);
+    let smear = (scroll.speed(now, STACK_SCROLL).abs() * SMEAR).min(MAX_SMEAR) * base;
+    let x = aligned_x(rect, halign);
+
+    let first = (position.floor() as isize - 1).max(0) as usize;
+    let last = (position.floor().max(0.0) as usize + STACK_ALPHA.len()).min(entries.len() - 1);
+    let gap = base * 0.5;
+    let mut y = 0.0;
+    let mut laid_out = Vec::with_capacity(last + 1 - first);
+    for (i, text) in entries.iter().enumerate().take(last + 1).skip(first) {
+        let distance = i as f32 - position;
+        let size = base * trio_scale(distance);
+        let galley = aligned(painter, text, font_bold(size), rect.width(), halign);
+        let height = galley.size().y;
+        laid_out.push((distance, y, galley));
+        y += height + gap;
+    }
+    let top_of = |i: usize| laid_out.get(i.checked_sub(first)?).map(|(_, top, _)| *top);
+    let below = position.floor().max(0.0) as usize;
+    let here = match (top_of(below), top_of(below + 1)) {
+        (Some(a), Some(b)) => lerp(a, b, position - below as f32),
+        (Some(a), None) => a,
+        _ => 0.0,
+    };
+
+    // Lines leave upwards past the top and fade out towards the bottom.
+    let clip = Rect::from_x_y_ranges(
+        painter.clip_rect().x_range(),
+        rect.top() - base * 3.0..=rect.bottom(),
+    );
+    let painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
+    let fade_band = base * 1.5;
+    for (distance, top, galley) in laid_out {
+        let y = rect.top() + top - here;
+        let center = y + galley.size().y / 2.0;
+        let fade = ((rect.bottom() - center) / fade_band).clamp(0.0, 1.0);
+        let a = stack_alpha(distance) * fade * fade * (3.0 - 2.0 * fade);
+        if a > 0.0 {
+            let pos = Pos2::new(x, y);
+            paint_smeared_galley(&painter, pos, &galley, with_alpha(color, a), smear);
+        }
     }
 }
 
@@ -591,7 +807,8 @@ pub fn slide_offset(t: f32, distance: f32) -> f32 {
     (1.0 - ease(t)) * distance
 }
 
-/// Sizes of the Up next card.
+/// Sizes of the Up next block: the queued song's cover with its title and artist beside it,
+/// and a countdown bar below, drawn straight over the backdrop.
 struct UpNextCard {
     width: f32,
     pad: f32,
@@ -606,35 +823,17 @@ impl UpNextCard {
         Self {
             width: (unit * 0.36).min(screen.width() * 0.24),
             pad: unit * 0.02,
-            thumb: unit * 0.07,
+            thumb: unit * 0.075,
             unit,
         }
-    }
-
-    fn label(&self, painter: &Painter) -> Arc<Galley> {
-        painter.layout_job(LayoutJob::single_section(
-            "UP NEXT".to_owned(),
-            TextFormat {
-                font_id: font_bold(self.unit * 0.016),
-                extra_letter_spacing: self.unit * 0.0025,
-                color: Color32::WHITE,
-                ..Default::default()
-            },
-        ))
     }
 
     fn bar_height(&self) -> f32 {
         (self.unit * 0.004).max(2.0)
     }
 
-    fn height(&self, painter: &Painter) -> f32 {
-        let pad = self.pad;
-        pad + self.label(painter).size().y
-            + pad * 0.6
-            + self.thumb
-            + pad * 0.9
-            + self.bar_height()
-            + pad * 0.8
+    fn height(&self) -> f32 {
+        self.thumb + self.pad * 0.7 + self.bar_height()
     }
 }
 
@@ -650,7 +849,7 @@ fn one_row(painter: &Painter, text: &str, font: FontId, width: f32) -> Arc<Galle
     painter.layout_job(job)
 }
 
-/// Glass card with the queued song, sliding in from the right with its top-right corner at
+/// The queued song, sliding in from the right with its top-right corner at
 /// `corner` for the end of the song and out once it changes. Returns how far it is shown.
 fn paint_up_next(
     ui: &egui::Ui,
@@ -688,43 +887,14 @@ fn paint_up_next(
         thumb,
         unit,
     } = *card;
-    let label = card.label(painter);
     let bar_h = card.bar_height();
-    let height = card.height(painter);
     let offset = slide_offset(t, width + (painter.clip_rect().right() - corner.x));
-    let rect = Rect::from_min_size(
-        Pos2::new(corner.x - width + offset, corner.y),
-        Vec2::new(width, height),
-    );
+    let left = corner.x - width + offset;
 
     let mut painter = painter.clone();
     painter.multiply_opacity(ease(t));
-    let radius = (unit * 0.013).min(255.0) as u8;
-    let shadow = Shadow {
-        offset: [0, (unit * 0.008) as i8],
-        blur: (unit * 0.03) as u8,
-        spread: 0,
-        color: Color32::from_black_alpha(90),
-    };
-    painter.add(shadow.as_shape(rect, radius));
-    painter.rect(
-        rect,
-        radius,
-        Color32::from_black_alpha(89),
-        Stroke::new(1.0, Color32::from_white_alpha(20)),
-        StrokeKind::Inside,
-    );
 
-    let mut y = rect.top() + pad;
-    let label_h = label.size().y;
-    painter.galley_with_override_text_color(
-        Pos2::new(rect.left() + pad, y),
-        label,
-        with_alpha(scheme.text, 0.55),
-    );
-    y += label_h + pad * 0.6;
-
-    let thumb_rect = Rect::from_min_size(Pos2::new(rect.left() + pad, y), Vec2::splat(thumb));
+    let thumb_rect = Rect::from_min_size(Pos2::new(left, corner.y), Vec2::splat(thumb));
     let cover = view
         .next_cover
         .filter(|c| c.song_file == song.file)
@@ -735,7 +905,7 @@ fn paint_up_next(
                 .filter(|a| a.song_file == song.file)
                 .map(|a| &a.cover)
         });
-    let thumb_radius = (thumb * 0.08) as u8;
+    let thumb_radius = (thumb * 0.1) as u8;
     match cover {
         Some(tex) => {
             painter.add(
@@ -744,36 +914,31 @@ fn paint_up_next(
             );
         }
         None => {
-            painter.rect_filled(thumb_rect, thumb_radius, Color32::from_white_alpha(18));
+            painter.rect_filled(thumb_rect, thumb_radius, with_alpha(scheme.text, 0.12));
         }
     }
 
-    let text_x = thumb_rect.right() + pad * 0.7;
-    let text_w = rect.right() - pad - text_x;
-    let title = one_row(&painter, &song.title, font_bold(unit * 0.025), text_w);
-    let artist = one_row(&painter, &song.artist, font_light(unit * 0.02), text_w);
-    let gap = unit * 0.004;
+    let text_x = thumb_rect.right() + pad * 0.8;
+    let text_w = left + width - text_x;
+    let title = one_row(&painter, &song.title, font_bold(unit * 0.028), text_w);
+    let artist = one_row(&painter, &song.artist, font_bold(unit * 0.021), text_w);
+    let gap = unit * 0.005;
     let text_h = title.size().y + gap + artist.size().y;
     let text_top = thumb_rect.center().y - text_h / 2.0;
     let artist_top = text_top + title.size().y + gap;
     painter.galley_with_override_text_color(Pos2::new(text_x, text_top), title, scheme.text);
-    painter.galley_with_override_text_color(
-        Pos2::new(text_x, artist_top),
-        artist,
-        with_alpha(scheme.text, 0.65),
-    );
-    y = thumb_rect.bottom() + pad * 0.9;
+    painter.galley_with_override_text_color(Pos2::new(text_x, artist_top), artist, scheme.subtext);
 
     let track = Rect::from_min_size(
-        Pos2::new(rect.left() + pad, y),
-        Vec2::new(width - 2.0 * pad, bar_h),
+        Pos2::new(left, thumb_rect.bottom() + pad * 0.7),
+        Vec2::new(width, bar_h),
     );
     let bar_radius = (bar_h / 2.0) as u8;
-    painter.rect_filled(track, bar_radius, Color32::from_white_alpha(38));
+    painter.rect_filled(track, bar_radius, with_alpha(scheme.text, 0.2));
     let fill = Rect::from_min_size(track.min, Vec2::new(track.width() * countdown, bar_h));
     // A light shade of the art's primary colour.
     let fill_color = mix(scheme.primary, scheme.text, 0.5);
-    painter.rect_filled(fill, bar_radius, with_alpha(fill_color, 0.85));
+    painter.rect_filled(fill, bar_radius, fill_color);
     t
 }
 
@@ -840,26 +1005,44 @@ mod tests {
             to: 2.0,
             since: 0.0,
         }
-        .retarget(3.0, 10.0);
-        assert_eq!(s.at(10.0), 2.0);
-        assert!((s.at(10.0 + LYRICS_SCROLL / 2.0) - 2.5).abs() < 1e-4);
-        assert_eq!(s.at(10.0 + LYRICS_SCROLL), 3.0);
-        assert_eq!(s.at(100.0), 3.0);
+        .retarget(3.0, 10.0, LYRICS_SCROLL);
+        let at = |t| s.at(t, LYRICS_SCROLL);
+        assert_eq!(at(10.0), 2.0);
+        assert!((at(10.0 + LYRICS_SCROLL / 2.0) - 2.5).abs() < 1e-4);
+        assert_eq!(at(10.0 + LYRICS_SCROLL), 3.0);
+        assert_eq!(at(100.0), 3.0);
+        // Moving fastest midway, still once settled.
+        assert!(s.speed(10.0 + LYRICS_SCROLL / 2.0, LYRICS_SCROLL) > 1.0);
+        assert_eq!(s.speed(100.0, LYRICS_SCROLL), 0.0);
         // Retargeting midway continues from the current position.
-        let mid = s.retarget(4.0, 10.0 + LYRICS_SCROLL / 2.0);
+        let mid = s.retarget(4.0, 10.0 + LYRICS_SCROLL / 2.0, LYRICS_SCROLL);
         assert!((mid.from - 2.5).abs() < 1e-4);
         // Long jumps only animate the last line.
-        let jump = s.retarget(20.0, 50.0);
+        let jump = s.retarget(20.0, 50.0, LYRICS_SCROLL);
         assert_eq!(jump.from, 19.0);
-        let back = s.retarget(0.0, 50.0);
+        let back = s.retarget(0.0, 50.0, LYRICS_SCROLL);
         assert_eq!(back.from, 1.0);
-        assert_eq!(s.retarget(3.0, 50.0), s);
+        assert_eq!(s.retarget(3.0, 50.0, LYRICS_SCROLL), s);
+    }
+
+    #[test]
+    fn stacked_lines_fade_downwards_and_leave_upwards() {
+        assert_eq!(stack_alpha(0.0), 1.0);
+        assert!((stack_alpha(1.0) - 0.55).abs() < 1e-6);
+        assert!((stack_alpha(2.0) - 0.35).abs() < 1e-6);
+        assert!((stack_alpha(3.0) - 0.15).abs() < 1e-6);
+        assert_eq!(stack_alpha(4.0), 0.0);
+        assert_eq!(stack_alpha(9.0), 0.0);
+        // The outgoing line is gone by the time it has moved up a line.
+        assert!(stack_alpha(-0.5) > 0.0 && stack_alpha(-0.5) < 0.5);
+        assert_eq!(stack_alpha(-1.0), 0.0);
+        assert!(stack_alpha(1.5) < stack_alpha(1.0) && stack_alpha(1.5) > stack_alpha(2.0));
     }
 
     #[test]
     fn controls_line_up_with_the_art() {
         let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1920.0, 1080.0));
-        let b = Block::new(screen);
+        let b = Block::new(screen, true);
         // A little larger than a third of the shorter side.
         assert!(b.art.width() > 1080.0 / 3.0 * 1.1 && b.art.width() < 1080.0 / 3.0 * 1.15);
         assert_eq!(b.play.bottom(), b.art.bottom());
@@ -871,6 +1054,30 @@ mod tests {
         assert!(b.next.right() > b.play.right());
         assert!(b.previous.left() < b.art.left());
         assert!(b.bar.width() > 1920.0 * 0.8);
+
+        // Without the skip buttons the bar runs from margin to margin.
+        let full = Block::new(screen, false);
+        assert_eq!(full.bar.left(), 1920.0 / 16.0);
+        assert_eq!(full.bar.right(), 1920.0 - 1920.0 / 16.0);
+        assert_eq!(full.bar.left(), full.art.left());
+        assert_eq!(full.bar.right(), full.play.right());
+        assert_eq!(full.bar.y_range(), b.bar.y_range());
+    }
+
+    #[test]
+    fn lyrics_align_to_the_art_and_the_play_button() {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1920.0, 1080.0));
+        let b = Block::new(screen, true);
+        let left = lyrics_x_range(screen, b.art, LyricsAlign::Left);
+        assert_eq!(left.min, b.art.left());
+        assert_eq!(left.max, 960.0);
+        let right = lyrics_x_range(screen, b.art, LyricsAlign::Right);
+        assert_eq!(right.max, b.play.right());
+        assert_eq!(right.min, 960.0);
+        let center = lyrics_x_range(screen, b.art, LyricsAlign::Center);
+        assert!((center.span() - right.span()).abs() < 1e-3);
+        assert!(center.min > b.art.right() && center.max < b.play.right());
+        assert!((center.center() - (b.art.right() + b.play.right()) / 2.0).abs() < 1e-3);
     }
 
     #[test]

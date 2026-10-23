@@ -5,6 +5,7 @@ use std::sync::Arc;
 use egui::{Align2, Color32, Id, Pos2, Rect, Vec2};
 use mpd_display_rs::lyrics::{Lyrics, LyricsState};
 
+use super::scheme::Ink;
 use super::widgets::{
     ease, edge_fade, lerp, paint_blurred_galley, paint_text_shadow, smooth_value,
 };
@@ -81,6 +82,8 @@ pub struct LyricsColumn {
     pub line_alpha: fn(isize) -> f32,
     /// Opacity of a soft dark halo behind each line, for light backdrops; 0.0 for none.
     pub shadow: f32,
+    /// The active line takes `ink.text`, the others `ink.soft`.
+    pub ink: Ink,
 }
 
 /// Paints the lyrics of `view`, left-aligned in `column.rect`, scrolled to the active line.
@@ -92,6 +95,7 @@ pub fn paint(ui: &egui::Ui, id: Id, column: &LyricsColumn, view: &View) {
         anchor: anchor_frac,
         line_alpha,
         shadow,
+        ink,
     } = *column;
     let halo = base * 0.14;
     let painter = ui.painter_at(rect.expand2(Vec2::new(rect.width() * 0.05, 0.0)));
@@ -100,7 +104,7 @@ pub fn paint(ui: &egui::Ui, id: Id, column: &LyricsColumn, view: &View) {
     let lyrics = match &view.lyrics {
         LyricsState::Found(lyrics) => Arc::clone(lyrics),
         LyricsState::Loading => {
-            let color = with_alpha(Color32::WHITE, 0.45 * alpha);
+            let color = with_alpha(ink.soft, 0.45 * alpha);
             painter.text(
                 Pos2::new(rect.left(), anchor),
                 Align2::LEFT_TOP,
@@ -161,7 +165,7 @@ pub fn paint(ui: &egui::Ui, id: Id, column: &LyricsColumn, view: &View) {
                 painter.galley_with_override_text_color(
                     Pos2::new(rect.left(), top),
                     intro,
-                    with_alpha(Color32::WHITE, a),
+                    with_alpha(ink.text, a),
                 );
             }
 
@@ -177,7 +181,8 @@ pub fn paint(ui: &egui::Ui, id: Id, column: &LyricsColumn, view: &View) {
                 let blur = line_blur(distance) * (1.0 - emphasis) * base * 0.09;
                 let pos = Pos2::new(rect.left(), top);
                 paint_text_shadow(&painter, pos, &galley, shadow * a, halo);
-                paint_blurred_galley(&painter, pos, &galley, with_alpha(Color32::WHITE, a), blur);
+                let color = ink.soft.lerp_to_gamma(ink.text, emphasis);
+                paint_blurred_galley(&painter, pos, &galley, with_alpha(color, a), blur);
             }
         }
         Lyrics::Plain(lines) => {
@@ -205,11 +210,7 @@ pub fn paint(ui: &egui::Ui, id: Id, column: &LyricsColumn, view: &View) {
                     let a = 0.6 * fade(top, height) * alpha;
                     let pos = Pos2::new(rect.left(), top);
                     paint_text_shadow(&painter, pos, &galley, shadow * a, halo);
-                    painter.galley_with_override_text_color(
-                        pos,
-                        galley,
-                        with_alpha(Color32::WHITE, a),
-                    );
+                    painter.galley_with_override_text_color(pos, galley, with_alpha(ink.soft, a));
                 }
                 top += height + gap;
             }

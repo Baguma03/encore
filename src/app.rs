@@ -5,10 +5,10 @@ use egui::{Event, Key, ViewportCommand};
 use mpd_display_rs::lyrics::{Lyrics, LyricsConfig, LyricsProvider, LyricsState};
 
 use crate::art::ArtLoader;
-use crate::config::{Config, Layout};
+use crate::config::{Config, Layout, LyricsAlign, LyricsFlow};
 use crate::export::{self, Aspect, ExportJob, ExportRequest, ExportStatus, Quality, Style};
 use crate::player::{Command, PlayState, Player, PlayerState, SongInfo};
-use crate::ui::export_panel::{ExportPanel, Marks, PanelResult};
+use crate::ui::export_panel::{ExportPanel, LiveLook, Marks, PanelResult};
 use crate::ui::toasts::{Progress, Toast, Toasts};
 use crate::ui::{self, ArtView, View};
 
@@ -34,6 +34,10 @@ enum Action {
     Clock,
     Motion,
     ArtistBackground,
+    Tint,
+    SkipButtons,
+    LyricsAlign,
+    LyricsFlow,
     Previous,
     Next,
     OpenExport,
@@ -63,6 +67,10 @@ fn key_action(key: Key, panel_open: bool) -> Option<Action> {
         Key::T => Action::Clock,
         Key::B => Action::Motion,
         Key::A => Action::ArtistBackground,
+        Key::K => Action::Tint,
+        Key::S => Action::SkipButtons,
+        Key::J => Action::LyricsAlign,
+        Key::O => Action::LyricsFlow,
         Key::ArrowLeft => Action::Previous,
         Key::ArrowRight => Action::Next,
         Key::E => Action::OpenExport,
@@ -86,6 +94,10 @@ pub struct App {
     motion: bool,
     /// Whether each layout uses the artist image as its background, kept for the session.
     artist_bg: HashMap<Layout, bool>,
+    tint: bool,
+    skip_buttons: bool,
+    lyrics_align: LyricsAlign,
+    lyrics_flow: LyricsFlow,
     export_panel: Option<ExportPanel>,
     /// Formats ticked in the export panel, kept for the session.
     export_formats: Vec<Aspect>,
@@ -125,6 +137,10 @@ impl App {
                 .into_iter()
                 .map(|l| (l, config.artist_bg(l)))
                 .collect(),
+            tint: config.tint,
+            skip_buttons: config.skip_buttons,
+            lyrics_align: config.lyrics_align,
+            lyrics_flow: config.lyrics_flow,
             config,
             player,
             art,
@@ -187,6 +203,10 @@ impl App {
                 let on = self.artist_bg_for(self.layout);
                 self.artist_bg.insert(self.layout, !on);
             }
+            Action::Tint => self.tint = !self.tint,
+            Action::SkipButtons => self.skip_buttons = !self.skip_buttons,
+            Action::LyricsAlign => self.lyrics_align = self.lyrics_align.next(),
+            Action::LyricsFlow => self.lyrics_flow = self.lyrics_flow.toggled(),
             Action::Previous => self.player.send(Command::Previous),
             Action::Next => self.player.send(Command::Next),
             Action::OpenExport => {
@@ -237,9 +257,15 @@ impl App {
             elapsed,
             self.marks,
             audio_found,
-            Style::for_layout(self.layout),
-            self.motion,
-            self.artist_bg.clone(),
+            LiveLook {
+                style: Style::for_layout(self.layout),
+                motion: self.motion,
+                artist_bg: self.artist_bg.clone(),
+                tint: self.tint,
+                skip_buttons: self.skip_buttons,
+                lyrics_align: self.lyrics_align,
+                lyrics_flow: self.lyrics_flow,
+            },
         ));
     }
 
@@ -360,6 +386,10 @@ impl App {
             capture: false,
             motion: self.motion,
             artist_bg: self.artist_bg_for(self.layout),
+            tint: self.tint,
+            skip_buttons: self.skip_buttons,
+            lyrics_align: self.lyrics_align,
+            lyrics_flow: self.lyrics_flow,
         }
     }
 
@@ -511,6 +541,10 @@ mod tests {
             Key::T,
             Key::B,
             Key::A,
+            Key::K,
+            Key::S,
+            Key::J,
+            Key::O,
             Key::D,
             Key::C,
             Key::F,
@@ -530,6 +564,14 @@ mod tests {
         assert_eq!(key_action(Key::E, true), Some(Action::CloseExport));
         assert_eq!(key_action(Key::F11, true), Some(Action::Fullscreen));
         assert_eq!(key_action(Key::A, false), Some(Action::ArtistBackground));
+        assert_eq!(key_action(Key::K, false), Some(Action::Tint));
+        assert_eq!(key_action(Key::S, false), Some(Action::SkipButtons));
+        assert_eq!(key_action(Key::K, true), None);
+        assert_eq!(key_action(Key::S, true), None);
+        assert_eq!(key_action(Key::J, false), Some(Action::LyricsAlign));
+        assert_eq!(key_action(Key::J, true), None);
+        assert_eq!(key_action(Key::O, false), Some(Action::LyricsFlow));
+        assert_eq!(key_action(Key::O, true), None);
         assert_eq!(key_action(Key::Z, false), None);
     }
 }
