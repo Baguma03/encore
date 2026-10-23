@@ -47,8 +47,6 @@ pub struct Config {
     pub motion: bool,
     /// `MPD_DISPLAY_ARTIST_BG` for every layout; see [`Config::artist_bg`].
     pub artist_bg: Option<bool>,
-    /// Audio visualizer fed by cava.
-    pub visualizer: bool,
 }
 
 impl Config {
@@ -149,7 +147,6 @@ impl Config {
             lyrics_online: get("MPD_DISPLAY_LYRICS_ONLINE").is_none_or(|v| !is_off(&v)),
             motion: get("MPD_DISPLAY_MOTION").is_none_or(|v| !is_off(&v)),
             artist_bg: get("MPD_DISPLAY_ARTIST_BG").map(|v| !is_off(&v)),
-            visualizer: get("MPD_DISPLAY_VISUALIZER").is_none_or(|v| !is_off(&v)),
         }
     }
 
@@ -242,13 +239,6 @@ mod tests {
         assert!(cfg.lyrics_enabled);
         assert!(cfg.lyrics_online);
         assert!(cfg.motion);
-    }
-
-    #[test]
-    fn visualizer_switch() {
-        assert!(parse(&[]).visualizer);
-        assert!(!parse(&[("MPD_DISPLAY_VISUALIZER", "off")]).visualizer);
-        assert!(parse(&[("MPD_DISPLAY_VISUALIZER", "on")]).visualizer);
     }
 
     #[test]

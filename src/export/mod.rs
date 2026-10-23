@@ -3,7 +3,6 @@
 pub mod ffmpeg;
 pub mod render;
 pub mod scene;
-pub mod spectrum;
 
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -20,7 +19,6 @@ use crate::player::SongInfo;
 use ffmpeg::Encoder;
 use render::Renderer;
 pub use scene::Scene;
-use spectrum::Spectrum;
 
 /// Frames rendered before the clip starts so animations settle; they are not written.
 const PRE_ROLL: Duration = Duration::from_millis(1500);
@@ -28,8 +26,6 @@ const PRE_ROLL: Duration = Duration::from_millis(1500);
 const NOTIFY_INTERVAL: Duration = Duration::from_millis(100);
 /// Byte budget for the artist and title part of a file name.
 const MAX_NAME_BYTES: usize = 180;
-/// Audio analysed before the first frame so the visualizer's auto-sensitivity has settled.
-const VISUALIZER_WARM_UP: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Aspect {
@@ -144,8 +140,6 @@ pub struct ExportRequest {
     pub motion: bool,
     /// Artist image as the background, when the artist has one.
     pub artist_bg: bool,
-    /// Audio visualizer computed from the song's audio.
-    pub visualizer: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -169,8 +163,6 @@ pub struct FrameInputs<'a> {
     pub elapsed: Duration,
     pub song: &'a SongInfo,
     pub lyrics: &'a LyricsState,
-    /// Visualizer bands for this frame.
-    pub visualizer: Option<&'a [f32]>,
 }
 
 struct Shared {
@@ -462,23 +454,7 @@ impl Worker {
             )
         })?;
 
-        let (audio, mut warning) = self.audio_source(req);
-        // Only the Spotify layout draws the visualizer.
-        let spectrum = if req.visualizer && req.style == Style::Spotify {
-            match self.spectrum(req) {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    warn!("no visualizer: {e}");
-                    warning.get_or_insert(format!("no visualizer: {e}"));
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        if self.cancelled() {
-            return Err(Stop::Cancelled);
-        }
+        let (audio, warning) = self.audio_source(req);
         let (w, h) = req.formats[0].size();
         let mut renderer = Renderer::new([w, h])?;
         info!("export rendering on {}", renderer.adapter_name());
@@ -503,7 +479,6 @@ impl Worker {
                     fps,
                     &part,
                     audio.as_deref(),
-                    spectrum.as_ref(),
                 )
             }))
             .unwrap_or_else(|_| Err(Stop::Failed("rendering crashed".to_owned())));
@@ -547,20 +522,6 @@ impl Worker {
         }
     }
 
-    /// Visualizer bands for the clip and its pre-roll, from the song's file.
-    fn spectrum(&self, req: &ExportRequest) -> Result<Spectrum, String> {
-        let dir = self
-            .music_dir
-            .as_ref()
-            .ok_or("MPD music directory unknown")?;
-        let path = dir.join(&req.song.file);
-        if !path.is_file() {
-            return Err(format!("{} not found", path.to_string_lossy()));
-        }
-        let from = req.start.saturating_sub(PRE_ROLL + VISUALIZER_WARM_UP);
-        Spectrum::decode(&path, from, req.end - from)
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn render_one(
         &mut self,
@@ -571,7 +532,6 @@ impl Worker {
         fps: u32,
         part: &Path,
         audio: Option<&Path>,
-        spectrum: Option<&Spectrum>,
     ) -> Result<(), Stop> {
         let clip = req.end - req.start;
         let total = (clip.as_secs_f64() * f64::from(fps)).round().max(1.0) as u32;
@@ -605,7 +565,6 @@ impl Worker {
                 elapsed,
                 song: &req.song,
                 lyrics: &req.lyrics,
-                visualizer: spectrum.and_then(|s| s.at(elapsed)),
             };
             let time = f64::from(i) / f64::from(fps);
             let pixels = match renderer.render_frame(time, dt, |ui| scene.draw(ui, &inputs)) {
@@ -858,7 +817,6 @@ mod tests {
                 elapsed,
                 song: &s,
                 lyrics: &lyrics,
-                visualizer: None,
             };
             let px = renderer
                 .render_frame(f64::from(i) / 30.0, 1.0 / 30.0, |ui| {
@@ -917,8 +875,8 @@ mod tests {
     /// `MPD_DISPLAY_TEST_MOTION=off`, `MPD_DISPLAY_TEST_START` (clip start in seconds, default
     /// 60), `MPD_DISPLAY_TEST_FORMATS` (comma-separated labels such as `16x9,1x1`) and
     /// `MPD_DISPLAY_TEST_NEXT` (the queued song for the Up next card) and
-    /// `MPD_DISPLAY_TEST_ARTIST_BG=on|off` (default on for the Spotify style only) and
-    /// `MPD_DISPLAY_TEST_VISUALIZER=off`. MPD is only queried for tags and art.
+    /// `MPD_DISPLAY_TEST_ARTIST_BG=on|off` (default on for the Spotify style only). MPD is only queried for
+    /// tags and art.
     #[test]
     #[ignore = "needs a GPU, ffmpeg, MPD and a song from the library"]
     fn export_of_library_song() {
@@ -1019,7 +977,6 @@ mod tests {
                 Ok(v) => v != "off",
                 Err(_) => style == Style::Spotify,
             },
-            visualizer: std::env::var("MPD_DISPLAY_TEST_VISUALIZER").as_deref() != Ok("off"),
         };
         let began = Instant::now();
         let job = spawn(&cfg, req, Box::new(|| {}));
@@ -1110,7 +1067,6 @@ mod tests {
             style: Style::Dark,
             motion: true,
             artist_bg: false,
-            visualizer: false,
         };
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = Arc::clone(&calls);

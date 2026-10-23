@@ -7,7 +7,6 @@ pub mod scheme;
 pub mod spotify;
 pub mod toasts;
 pub mod vibrant;
-pub mod visualizer;
 pub mod wavy;
 pub mod widgets;
 
@@ -67,9 +66,6 @@ pub struct View<'a> {
     pub motion: bool,
     /// Use the artist image as the background when the song's artist has one.
     pub artist_bg: bool,
-    /// Latest audio bands for the Spotify layout's visualizer; `None` when it is off or has
-    /// no input.
-    pub visualizer: Option<&'a [f32]>,
 }
 
 /// Registers CircularStd Book as the default proportional font and Bold as the `"bold"` family.

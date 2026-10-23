@@ -5,7 +5,6 @@ use egui::{Event, Key, ViewportCommand};
 use mpd_display_rs::lyrics::{Lyrics, LyricsConfig, LyricsProvider, LyricsState};
 
 use crate::art::ArtLoader;
-use crate::cava::Cava;
 use crate::config::{Config, Layout};
 use crate::export::{self, Aspect, ExportJob, ExportRequest, ExportStatus, Style};
 use crate::player::{Command, PlayState, Player, PlayerState, SongInfo};
@@ -34,7 +33,6 @@ enum Action {
     Lyrics,
     Clock,
     Motion,
-    Visualizer,
     ArtistBackground,
     Previous,
     Next,
@@ -64,7 +62,6 @@ fn key_action(key: Key, panel_open: bool) -> Option<Action> {
         Key::Y => Action::Lyrics,
         Key::T => Action::Clock,
         Key::B => Action::Motion,
-        Key::V => Action::Visualizer,
         Key::A => Action::ArtistBackground,
         Key::ArrowLeft => Action::Previous,
         Key::ArrowRight => Action::Next,
@@ -87,8 +84,6 @@ pub struct App {
     lyrics_enabled: bool,
     show_clock: bool,
     motion: bool,
-    visualizer: bool,
-    cava: Cava,
     /// Whether each layout uses the artist image as its background, kept for the session.
     artist_bg: HashMap<Layout, bool>,
     export_panel: Option<ExportPanel>,
@@ -125,8 +120,6 @@ impl App {
             layout: config.layout,
             lyrics_enabled: config.lyrics_enabled,
             motion: config.motion,
-            visualizer: config.visualizer,
-            cava: Cava::new(),
             artist_bg: [Layout::Spotify, Layout::Apple, Layout::Vibrant]
                 .into_iter()
                 .map(|l| (l, config.artist_bg(l)))
@@ -188,7 +181,6 @@ impl App {
             Action::Lyrics => self.lyrics_enabled = !self.lyrics_enabled,
             Action::Clock => self.show_clock = !self.show_clock,
             Action::Motion => self.motion = !self.motion,
-            Action::Visualizer => self.visualizer = !self.visualizer,
             Action::ArtistBackground => {
                 let on = self.artist_bg_for(self.layout);
                 self.artist_bg.insert(self.layout, !on);
@@ -216,12 +208,6 @@ impl App {
             }
             Action::MarkIn | Action::MarkOut => {}
         }
-    }
-
-    /// Whether the visualizer runs: it is on, the Spotify layout is showing and the export
-    /// panel is closed.
-    fn visualizer_live(&self) -> bool {
-        self.visualizer && self.layout == Layout::Spotify && self.export_panel.is_none()
     }
 
     fn artist_bg_for(&self, layout: Layout) -> bool {
@@ -252,7 +238,6 @@ impl App {
             Style::for_layout(self.layout),
             self.motion,
             self.artist_bg.clone(),
-            self.visualizer,
         ));
     }
 
@@ -357,12 +342,7 @@ impl App {
         self.lyrics.get(&key)
     }
 
-    fn view<'a>(
-        &'a self,
-        state: &'a PlayerState,
-        lyrics: LyricsState,
-        bands: &'a [f32],
-    ) -> View<'a> {
+    fn view<'a>(&'a self, state: &'a PlayerState, lyrics: LyricsState) -> View<'a> {
         View {
             player: state,
             art: ArtView {
@@ -378,17 +358,11 @@ impl App {
             capture: false,
             motion: self.motion,
             artist_bg: self.artist_bg_for(self.layout),
-            visualizer: (bands.len() > 1).then_some(bands),
         }
     }
 
     fn draw_layout(&self, ui: &mut egui::Ui, state: &PlayerState, lyrics: LyricsState) {
-        let bands = if self.visualizer_live() {
-            self.cava.bands()
-        } else {
-            Vec::new()
-        };
-        let view = self.view(state, lyrics, &bands);
+        let view = self.view(state, lyrics);
         let cmd = match self.layout {
             Layout::Spotify => ui::spotify::draw(ui, &view),
             Layout::Apple => ui::apple::draw(ui, &view),
@@ -491,7 +465,6 @@ impl eframe::App for App {
         self.art.poll(&ctx);
 
         let lyrics = self.update_lyrics(&state);
-        self.cava.set_active(self.visualizer_live());
 
         egui::CentralPanel::no_frame().show(ui, |ui| self.draw_layout(ui, &state, lyrics.clone()));
 
@@ -535,7 +508,6 @@ mod tests {
             Key::Y,
             Key::T,
             Key::B,
-            Key::V,
             Key::A,
             Key::D,
             Key::C,
@@ -556,7 +528,6 @@ mod tests {
         assert_eq!(key_action(Key::E, true), Some(Action::CloseExport));
         assert_eq!(key_action(Key::F11, true), Some(Action::Fullscreen));
         assert_eq!(key_action(Key::A, false), Some(Action::ArtistBackground));
-        assert_eq!(key_action(Key::V, false), Some(Action::Visualizer));
         assert_eq!(key_action(Key::Z, false), None);
     }
 }

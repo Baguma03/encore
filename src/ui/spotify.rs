@@ -1,6 +1,6 @@
 //! Layout modelled on the Spotify desktop client's fullscreen mode, with controls styled after
 //! Quickshell's media widget: a rounded-square play/pause button level with the bottom of the
-//! album art, and a full-width wavy seek bar between previous and next buttons.
+//! album art, and a full-width wavy seek bar along the bottom.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +17,6 @@ use super::apple::{self, square_uv};
 use super::backdrop;
 use super::icons::{paint_icon, Icon};
 use super::scheme::{mix, Scheme};
-use super::visualizer;
 use super::wavy::{self, BarColors, Wavy};
 use super::widgets::{ease, lerp, paint_text_shadow, seek_input};
 use super::{cover_rect, fit_text, font_bold, font_light, with_alpha, View, FULL_UV};
@@ -47,15 +46,12 @@ const ART_RADIUS: f32 = 0.035;
 /// Seconds for the Up next card to slide in or out.
 const UP_NEXT_SLIDE: f32 = 0.5;
 
-/// Visualizer opacity and its height at full level, relative to the screen height.
-const VISUALIZER_ALPHA: f32 = 0.35;
-const VISUALIZER_HEIGHT: f32 = 0.18;
 /// Seconds for the seek bar's wave to flatten when paused or rise again.
 const WAVE_FADE: f32 = 0.35;
 /// Seconds for the play button to change colour between playing and paused.
 const BUTTON_MORPH: f32 = 0.2;
-/// Share of an icon's em box left of the skip icons' visible outline.
-const ICON_SIDE_BEARING: f32 = 0.19;
+/// Height of the seek bar's handle relative to its line width.
+const HANDLE_HEIGHT: f32 = 3.6;
 
 /// Positions of the bottom block, shared by drawing and hit-testing.
 struct Block {
@@ -64,11 +60,7 @@ struct Block {
     title: Pos2,
     /// Font size of the title; the artist is half of it.
     title_size: f32,
-    /// Icon size of the previous and next buttons, which are as tall as the controls row.
-    icon: f32,
-    previous: Rect,
-    next: Rect,
-    /// The seek bar's row between the previous and next buttons.
+    /// The seek bar, as tall as its handle, between the side margins.
     bar: Rect,
     play: Rect,
     /// Thickness of the seek bar's wave and track.
@@ -93,41 +85,24 @@ impl Block {
             Pos2::new(right, art.bottom()),
         );
 
-        // The controls row runs along the bottom between the side margins, the icons' visible
-        // outlines reaching the margins.
-        let icon = unit * 0.055;
+        let line = (unit * 0.0065).max(2.0);
         let row_y = screen.top() + h * 0.903;
-        let row = Rect::from_x_y_ranges(left..=right, row_y - icon / 2.0..=row_y + icon / 2.0);
-        let previous = Rect::from_min_size(
-            Pos2::new(left - icon * ICON_SIDE_BEARING, row.top()),
-            Vec2::splat(icon),
-        );
-        let next = Rect::from_min_size(
-            Pos2::new(right + icon * ICON_SIDE_BEARING - icon, row.top()),
-            Vec2::splat(icon),
-        );
-        let gap = unit * 0.008;
-        let bar = Rect::from_x_y_ranges(
-            previous.right() + gap..=(next.left() - gap).max(previous.right() + gap),
-            row.y_range(),
-        );
+        let half = line * HANDLE_HEIGHT / 2.0;
+        let bar = Rect::from_x_y_ranges(left..=right, row_y - half..=row_y + half);
         Self {
             art,
             title,
             title_size: unit / 9.0 * 0.9,
-            icon,
-            previous,
-            next,
             bar,
             play,
-            line: (unit * 0.0095).max(3.0),
+            line,
         }
     }
 
     fn wavy(&self, wave: f32, time: f64, pressed: bool) -> Wavy {
         Wavy {
             line: self.line,
-            handle_height: 3.6,
+            handle_height: HANDLE_HEIGHT,
             wave,
             time,
             pressed,
@@ -172,30 +147,6 @@ fn paint(
         backdrop::paint_artist_image(painter, screen, &view.art, BACKGROUND_IMAGE_TINT, pan);
     } else {
         paint_art_backdrop(ui, painter, screen, view);
-    }
-
-    // Visualizer along the bottom edge, behind the art and controls.
-    let level = visualizer::level(ui, id, view);
-    if let Some(bands) = view.visualizer.filter(|_| level > 0.0) {
-        // A square-root curve lifts quiet passages so the wave stays visible.
-        let bands: Vec<f32> = bands
-            .iter()
-            .map(|v| (v / visualizer::MAX_VALUE).clamp(0.0, 1.0).sqrt() * visualizer::MAX_VALUE)
-            .collect();
-        let rect = Rect::from_x_y_ranges(
-            screen.x_range(),
-            screen.bottom() - h * VISUALIZER_HEIGHT..=screen.bottom(),
-        );
-        visualizer::paint(
-            painter,
-            rect,
-            0.0,
-            &bands,
-            level,
-            scheme.primary,
-            VISUALIZER_ALPHA,
-            h * 0.01,
-        );
     }
 
     // Album art
@@ -267,8 +218,7 @@ fn paint(
     command
 }
 
-/// The previous and next buttons either side of the wavy seek bar, and the play/pause
-/// button. Returns the command a click asked for; decoration only when capturing.
+/// The wavy seek bar and the play/pause button. Returns the command a click asked for; decoration only when capturing.
 fn paint_controls(
     ui: &egui::Ui,
     painter: &Painter,
@@ -295,7 +245,7 @@ fn paint_controls(
     let shown = if view.capture {
         progress
     } else {
-        let pad = Vec2::new(0.0, block.icon * 0.2);
+        let pad = Vec2::new(0.0, block.bar.height());
         let bar = seek_input(
             ui,
             id.with("seek"),
@@ -317,33 +267,6 @@ fn paint_controls(
         dot: scheme.on_secondary_container,
     };
     wavy::paint(painter, block.bar, shown, &style, &colors);
-
-    // Previous and next
-    for (icon, rect, cmd, key) in [
-        (
-            Icon::Previous,
-            block.previous,
-            Command::Previous,
-            "previous",
-        ),
-        (Icon::Next, block.next, Command::Next, "next"),
-    ] {
-        let hover = hover_button(ui, view, rect, id.with(key), cmd, &mut command);
-        if hover > 0.0 {
-            painter.circle_filled(
-                rect.center(),
-                rect.width() * 0.6,
-                with_alpha(scheme.secondary_container, hover * 0.8),
-            );
-        }
-        paint_icon(
-            painter,
-            icon,
-            rect.center(),
-            block.icon,
-            scheme.on_secondary_container,
-        );
-    }
 
     // Play/pause: the primary colour while playing, the secondary container while paused.
     let morph = ctx.animate_bool_with_time(id.with("play-morph"), playing, BUTTON_MORPH);
@@ -889,13 +812,11 @@ mod tests {
         assert!(b.art.width() > 1080.0 / 3.0 * 1.1 && b.art.width() < 1080.0 / 3.0 * 1.15);
         assert_eq!(b.play.bottom(), b.art.bottom());
         assert!(b.title.x > b.art.right() && b.title.y > b.art.top());
-        // The controls row runs below the art across the screen, its ends at the margins.
+        // The seek bar runs below the art across the screen, from the art's left edge to the
+        // play button's right edge.
         assert!(b.bar.top() > b.art.bottom());
-        assert!(b.previous.right() < b.bar.left());
-        assert!(b.bar.right() < b.next.left());
-        assert!(b.next.right() > b.play.right());
-        assert!(b.previous.left() < b.art.left());
-        assert!(b.bar.width() > 1920.0 * 0.8);
+        assert_eq!(b.bar.left(), b.art.left());
+        assert_eq!(b.bar.right(), b.play.right());
     }
 
     #[test]
