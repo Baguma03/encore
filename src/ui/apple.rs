@@ -24,6 +24,10 @@ const BLOCK_HEIGHT: f32 = 1.56;
 pub const COLUMN_SLIDE: f32 = 0.7;
 /// Height of the lyrics column's active line, as a fraction from its top.
 const LYRICS_ANCHOR: f32 = 0.36;
+/// Left edge of the landscape lyrics column with lyrics showing, and the right margin beside
+/// it, relative to the screen width.
+const LYRICS_LEFT: f32 = 0.52;
+const LYRICS_RIGHT_MARGIN: f32 = 0.06;
 /// Width-to-height ratios at or beyond which the layout is landscape or portrait.
 const LANDSCAPE_ASPECT: f32 = 1.2;
 const PORTRAIT_ASPECT: f32 = 0.8;
@@ -296,10 +300,10 @@ fn landscape(
     let meta_pos = Pos2::new(column_x, art.bottom() + s * 0.075);
     let lyrics = Rect::from_min_max(
         Pos2::new(
-            screen.left() + w * lerp(0.58, 0.52, lyrics_t),
+            screen.left() + w * lerp(0.58, LYRICS_LEFT, lyrics_t),
             content.top(),
         ),
-        Pos2::new(screen.right() - w * 0.06, content.bottom()),
+        Pos2::new(screen.right() - w * LYRICS_RIGHT_MARGIN, content.bottom()),
     );
 
     Placement {
@@ -698,6 +702,11 @@ pub fn paint_art(painter: &Painter, rect: Rect, view: &View, radius: f32) {
             painter.rect_filled(rect, radius, Color32::from_white_alpha(14));
         }
     }
+}
+
+/// Width of the landscape lyrics column with lyrics showing, for a screen `width` wide.
+pub fn lyrics_width(width: f32) -> f32 {
+    width * (1.0 - LYRICS_LEFT - LYRICS_RIGHT_MARGIN)
 }
 
 /// Date and time centred at the top of the window in `ink`, sized from its shorter side.
