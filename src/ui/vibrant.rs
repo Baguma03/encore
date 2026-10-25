@@ -28,6 +28,10 @@ const PALETTE_ACCENT: f32 = 0.2;
 const BACKDROP_SATURATION: f32 = 1.3;
 /// Height of the lyrics column's active line, as a fraction from its top.
 const LYRICS_ANCHOR: f32 = 0.4;
+/// Left edge of the landscape lyrics column with lyrics showing, and the right margin beside
+/// it, relative to the screen width.
+const LYRICS_LEFT: f32 = 0.55;
+const LYRICS_RIGHT_MARGIN: f32 = 0.07;
 
 /// Backdrop colours when there is no art.
 const FALLBACK_PALETTE: [Color32; 3] = [
@@ -264,8 +268,11 @@ fn landscape(
     let top = content.center().y - block_h / 2.0;
     let art = Rect::from_min_size(Pos2::new(column_x - s / 2.0, top), Vec2::splat(s));
     let lyrics = Rect::from_min_max(
-        Pos2::new(screen.left() + w * lerp(0.6, 0.55, lyrics_t), content.top()),
-        Pos2::new(screen.right() - w * 0.07, content.bottom()),
+        Pos2::new(
+            screen.left() + w * lerp(0.6, LYRICS_LEFT, lyrics_t),
+            content.top(),
+        ),
+        Pos2::new(screen.right() - w * LYRICS_RIGHT_MARGIN, content.bottom()),
     );
 
     Placement {
@@ -275,6 +282,11 @@ fn landscape(
         lyrics_anchor: LYRICS_ANCHOR,
         lyrics,
     }
+}
+
+/// Width of the landscape lyrics column with lyrics showing, for a screen `width` wide.
+pub fn lyrics_width(width: f32) -> f32 {
+    width * (1.0 - LYRICS_LEFT - LYRICS_RIGHT_MARGIN)
 }
 
 /// Art centred near the top with its info beneath, lyrics below. Without lyrics the art and

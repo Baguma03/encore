@@ -12,11 +12,11 @@ use super::widgets::{
 use super::{font_bold, font_light, with_alpha, View};
 
 /// Seconds for a lyric line to grow into or out of the active style.
-const LINE_EMPHASIS: f32 = 0.35;
+pub const LINE_EMPHASIS: f32 = 0.35;
 /// Exponential rate of the lyrics scroll, per second.
-const SCROLL_RATE: f32 = 7.0;
+pub const SCROLL_RATE: f32 = 7.0;
 /// Size of inactive lyric lines relative to the active one.
-const INACTIVE_SCALE: f32 = 0.9;
+pub const INACTIVE_SCALE: f32 = 0.9;
 
 /// 1.0 when the lyrics column should be shown, 0.0 when the art should sit centred.
 /// While lyrics are loading the previous choice is kept, so songs without lyrics don't bounce.

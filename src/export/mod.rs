@@ -1038,6 +1038,7 @@ mod tests {
             },
             lyrics_flow: match std::env::var("ENCORE_TEST_LYRICS_FLOW").as_deref() {
                 Ok("classic") => LyricsFlow::Classic,
+                Ok("scrolling") => LyricsFlow::Scrolling,
                 _ => LyricsFlow::Stacked,
             },
             quality: match std::env::var("ENCORE_TEST_QUALITY").as_deref() {

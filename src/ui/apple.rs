@@ -704,11 +704,6 @@ pub fn paint_art(painter: &Painter, rect: Rect, view: &View, radius: f32) {
     }
 }
 
-/// Width of the landscape lyrics column with lyrics showing, for a screen `width` wide.
-pub fn lyrics_width(width: f32) -> f32 {
-    width * (1.0 - LYRICS_LEFT - LYRICS_RIGHT_MARGIN)
-}
-
 /// Date and time centred at the top of the window in `ink`, sized from its shorter side.
 pub fn paint_clock(painter: &Painter, screen: Rect, view: &View, alpha: f32, ink: &Ink) {
     let h = screen.width().min(screen.height());

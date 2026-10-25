@@ -74,16 +74,24 @@ pub enum LyricsFlow {
     /// The active line at the top with the next three below it, fading out.
     #[default]
     Stacked,
+    /// The whole lyrics scrolling past the active line, as in Apple Music: the active line
+    /// larger and brightest, the others smaller and dimmer.
+    Scrolling,
 }
 
 impl LyricsFlow {
-    pub const ALL: [LyricsFlow; 2] = [LyricsFlow::Classic, LyricsFlow::Stacked];
+    pub const ALL: [LyricsFlow; 3] = [
+        LyricsFlow::Classic,
+        LyricsFlow::Stacked,
+        LyricsFlow::Scrolling,
+    ];
 
-    /// The other flow.
-    pub fn toggled(self) -> Self {
+    /// The flow after this one in the cycle Classic → Stacked → Scrolling.
+    pub fn next(self) -> Self {
         match self {
             LyricsFlow::Classic => LyricsFlow::Stacked,
-            LyricsFlow::Stacked => LyricsFlow::Classic,
+            LyricsFlow::Stacked => LyricsFlow::Scrolling,
+            LyricsFlow::Scrolling => LyricsFlow::Classic,
         }
     }
 
@@ -91,6 +99,7 @@ impl LyricsFlow {
         match self {
             LyricsFlow::Classic => "Classic",
             LyricsFlow::Stacked => "Stacked",
+            LyricsFlow::Scrolling => "Scrolling",
         }
     }
 }
@@ -215,6 +224,7 @@ impl Config {
         {
             Some("classic") => LyricsFlow::Classic,
             Some("stacked") | None => LyricsFlow::Stacked,
+            Some("scrolling") => LyricsFlow::Scrolling,
             Some(other) => {
                 warn!("unknown ENCORE_LYRICS_FLOW {other:?}, using stacked");
                 LyricsFlow::Stacked
@@ -369,9 +379,11 @@ mod tests {
         let flow = |v| parse(&[("ENCORE_LYRICS_FLOW", v)]).lyrics_flow;
         assert_eq!(flow("classic"), LyricsFlow::Classic);
         assert_eq!(flow(" Stacked "), LyricsFlow::Stacked);
+        assert_eq!(flow("Scrolling"), LyricsFlow::Scrolling);
         assert_eq!(flow("sideways"), LyricsFlow::Stacked);
-        assert_eq!(LyricsFlow::Classic.toggled(), LyricsFlow::Stacked);
-        assert_eq!(LyricsFlow::Stacked.toggled(), LyricsFlow::Classic);
+        assert_eq!(LyricsFlow::Classic.next(), LyricsFlow::Stacked);
+        assert_eq!(LyricsFlow::Stacked.next(), LyricsFlow::Scrolling);
+        assert_eq!(LyricsFlow::Scrolling.next(), LyricsFlow::Classic);
     }
 
     #[test]

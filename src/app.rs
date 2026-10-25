@@ -206,7 +206,7 @@ impl App {
             Action::Tint => self.tint = !self.tint,
             Action::SkipButtons => self.skip_buttons = !self.skip_buttons,
             Action::LyricsAlign => self.lyrics_align = self.lyrics_align.next(),
-            Action::LyricsFlow => self.lyrics_flow = self.lyrics_flow.toggled(),
+            Action::LyricsFlow => self.lyrics_flow = self.lyrics_flow.next(),
             Action::Previous => self.player.send(Command::Previous),
             Action::Next => self.player.send(Command::Next),
             Action::OpenExport => {

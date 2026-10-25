@@ -15,9 +15,11 @@ use encore::lyrics::{Lyrics, LyricsState};
 use super::apple::{self, square_uv};
 use super::backdrop;
 use super::icons::{paint_icon, Icon};
+use super::lyrics_column::{self, INACTIVE_SCALE, LINE_EMPHASIS, SCROLL_RATE};
 use super::scheme::{mix, Scheme};
+use super::vibrant;
 use super::wavy::{self, BarColors, Wavy};
-use super::widgets::{ease, lerp, paint_smeared_galley, seek_input};
+use super::widgets::{ease, lerp, paint_smeared_galley, seek_input, smooth_value};
 use super::{cover_rect, fit_text, font_bold, font_light, with_alpha, View, FULL_UV};
 use crate::art::ArtTextures;
 use crate::config::{LyricsAlign, LyricsFlow};
@@ -237,7 +239,7 @@ fn paint(
     let card = UpNextCard::new(screen);
     let card_t = paint_up_next(ui, painter, &card, corner, view, &scheme);
 
-    // Lyrics in a column as wide as the Apple layout's, placed by the view's alignment between
+    // Lyrics in a column as wide as the Vibrant layout's, placed by the view's alignment between
     // the title's left edge and the play button's right edge. The active line's top stays at
     // `slot`, 60% of the art's height above the art; lines end one and a half art-to-title gaps
     // above the title. While the Up next card shows, the area's top moves below it when the
@@ -248,7 +250,7 @@ fn paint(
     let bottom = block.title.y - LYRICS_BOTTOM_GAP * (block.title.x - art_rect.right());
     let card_t = if under_corner { card_t } else { 0.0 };
     if bottom > top && x_range.span() > 0.0 {
-        // The Apple layout's lyric size at the same window size.
+        // The Vibrant layout's lyric size at the same window size.
         let base = (h / 22.0).min(x_range.span() / 14.0);
         let slot = (art_rect.top() - ACTIVE_LINE_RISE * art_rect.height()).clamp(top, bottom);
         let card_bottom = corner.y + card.height() + h * 0.04;
@@ -533,13 +535,13 @@ impl Scroll {
     }
 }
 
-/// Horizontal extent of the lyrics on a screen `width` wide: a column as wide as the Apple
+/// Horizontal extent of the lyrics on a screen `width` wide: a column as wide as the Vibrant
 /// layout's lyrics, no wider than the span from the title's left edge to the play button's
 /// right edge, starting at the span's left edge, ending at its right edge (for both right-hand
 /// alignments) or centred in it.
 fn lyrics_x_range(block: &Block, width: f32, align: LyricsAlign) -> egui::Rangef {
     let (left, right) = (block.title.x, block.play.right().max(block.title.x));
-    let column = apple::lyrics_width(width).min(right - left);
+    let column = vibrant::lyrics_width(width).min(right - left);
     match align {
         LyricsAlign::Left => egui::Rangef::new(left, left + column),
         LyricsAlign::Right | LyricsAlign::RightColumnLeftText => {
@@ -613,8 +615,9 @@ fn aligned_x(rect: Rect, halign: Align) -> f32 {
 }
 
 /// The lyrics in `color` within `area`, aligned as the view asks with the active line's top at
-/// height `slot`: the classic four lines, or synced lyrics in the stacked flow. `base` is the
-/// active line's font size. Lines dissolve towards the area's top and bottom edges.
+/// height `slot`: the classic four lines, or synced lyrics in the stacked or scrolling flow.
+/// `base` is the active line's font size. Lines wrap at the column's width scaled by their
+/// size, as in the Vibrant layout, and dissolve towards the area's top and bottom edges.
 fn paint_lyrics(
     ui: &egui::Ui,
     painter: &Painter,
@@ -645,10 +648,14 @@ fn paint_lyrics(
         halign,
         color,
     };
-    if synced && view.lyrics_flow == LyricsFlow::Stacked {
-        paint_stacked(ui, painter, area, &lines, id.with("stacked"));
-    } else {
-        paint_classic(ui, painter, area, &lines, synced, id);
+    match view.lyrics_flow {
+        LyricsFlow::Stacked if synced => {
+            paint_stacked(ui, painter, area, &lines, id.with("stacked"))
+        }
+        LyricsFlow::Scrolling if synced => {
+            paint_scrolling(ui, painter, area, &lines, id.with("scrolling"));
+        }
+        _ => paint_classic(ui, painter, area, &lines, synced, id),
     }
 }
 
@@ -697,11 +704,12 @@ fn paint_classic(
     let mut laid_out = Vec::with_capacity(last + 1 - first);
     for (i, text) in entries.iter().enumerate().take(last + 1).skip(first) {
         let distance = i as f32 - position;
+        let scale = trio_scale(distance);
         let galley = aligned(
             painter,
             text,
-            font_bold(base * trio_scale(distance)),
-            rect.width(),
+            font_bold(base * scale),
+            rect.width() * scale,
             halign,
         );
         let height = galley.size().y;
@@ -755,8 +763,14 @@ fn paint_stacked(ui: &egui::Ui, painter: &Painter, rect: Rect, lines: &Lines, id
     let mut laid_out = Vec::with_capacity(last + 1 - first);
     for (i, text) in entries.iter().enumerate().take(last + 1).skip(first) {
         let distance = i as f32 - position;
-        let size = base * trio_scale(distance);
-        let galley = aligned(painter, text, font_bold(size), rect.width(), halign);
+        let scale = trio_scale(distance);
+        let galley = aligned(
+            painter,
+            text,
+            font_bold(base * scale),
+            rect.width() * scale,
+            halign,
+        );
         let height = galley.size().y;
         laid_out.push((distance, y, galley));
         y += height + gap;
@@ -789,6 +803,57 @@ fn paint_stacked(ui: &egui::Ui, painter: &Painter, rect: Rect, lines: &Lines, id
                 base,
             );
         }
+    }
+}
+
+/// Synced lyrics as in Apple Music: the whole list scrolls so the active line's top sits at
+/// the slot, the active line larger and brightest, the others smaller and dimmer the further
+/// they are from it. Each line grows into or out of the active style as it changes. Lines
+/// dissolve where they cross the edges of `rect`; state is kept under `id`.
+fn paint_scrolling(ui: &egui::Ui, painter: &Painter, rect: Rect, lines: &Lines, id: Id) {
+    let Lines {
+        entries,
+        active,
+        slot,
+        base,
+        halign,
+        color,
+    } = *lines;
+    let ctx = ui.ctx();
+    let x = aligned_x(rect, halign);
+    let gap = base * 0.6;
+    let mut y = 0.0;
+    let mut active_top = 0.0;
+    let mut laid_out = Vec::with_capacity(entries.len());
+    for (i, text) in entries.iter().enumerate() {
+        let target = if i == active { 1.0 } else { 0.0 };
+        let emphasis = ease(ctx.animate_value_with_time(id.with(i), target, LINE_EMPHASIS));
+        let scale = lerp(INACTIVE_SCALE, 1.0, emphasis);
+        let galley = aligned(
+            painter,
+            text,
+            font_bold(base * scale),
+            rect.width() * scale,
+            halign,
+        );
+        if i == active {
+            active_top = y;
+        }
+        let height = galley.size().y;
+        laid_out.push((y, emphasis, galley));
+        y += height + gap;
+    }
+    let offset = smooth_value(ctx, id.with("scroll"), active_top, SCROLL_RATE);
+
+    for (i, (top, emphasis, galley)) in laid_out.into_iter().enumerate() {
+        let pos = Pos2::new(x, slot + top - offset);
+        if pos.y > rect.bottom() || pos.y + galley.size().y < rect.top() {
+            continue;
+        }
+        let distance = i as isize - active as isize;
+        // The Apple layout's steps, which keep upcoming lines brighter than past ones.
+        let a = lerp(lyrics_column::line_alpha(distance), 1.0, emphasis);
+        paint_edge_faded(painter, pos, &galley, with_alpha(color, a), 0.0, rect, base);
     }
 }
 
@@ -1115,7 +1180,7 @@ mod tests {
     fn lyrics_column_sits_between_the_title_and_the_play_button() {
         let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1920.0, 1080.0));
         let b = Block::new(screen, true);
-        let column = apple::lyrics_width(1920.0);
+        let column = vibrant::lyrics_width(1920.0);
         let range = |align| lyrics_x_range(&b, 1920.0, align);
         let left = range(LyricsAlign::Left);
         assert_eq!(left.min, b.title.x);
