@@ -99,8 +99,32 @@ target/release/encore
 
 `cargo install --path .` installs the `encore` binary instead. The window's class (app id) is `encore`, for use in compositor window rules.
 
+### Configuration file
+Startup settings live in `~/.config/encore/config.toml` (`$XDG_CONFIG_HOME/encore/config.toml` when `XDG_CONFIG_HOME` is set). On first launch Encore writes a starter file there with every setting commented out at its default; an existing file is never overwritten. Every key is optional:
+
+```toml
+layout = "spotify"          # apple | vibrant | spotify
+lyrics = true
+lyrics_online = true        # LRCLIB lookups
+lyrics_align = "right-left" # left | center | right | right-left
+lyrics_flow = "scrolling"   # classic | stacked | scrolling
+motion = true
+artist_bg = true            # unset: on for Spotify, off for the others
+tint = true
+skip_buttons = true
+clock = true                # date and clock overlay at startup
+export_dir = "~/Videos/encore"
+
+[mpd]
+host = "localhost"          # "password@host" for a server with a password
+port = 6600
+music_dir = "~/Music"
+```
+
+Each setting takes the same values as the environment variable of the same meaning below, and an environment variable that is set overrides the file. Settings left out use their defaults. A key that is unknown or has an invalid value is skipped with a warning in the log, and a file that is not valid TOML is ignored as a whole, so a mistake never stops Encore from starting. The file is only read: settings changed with the keyboard while Encore runs last until it closes.
+
 ### Environment variables
-The `ENCORE_*` variables also accept their older `MPD_DISPLAY_*` names (for example `MPD_DISPLAY_LAYOUT`) when the `ENCORE_*` variable is unset.
+Environment variables override the [configuration file](#configuration-file). The `ENCORE_*` variables also accept their older `MPD_DISPLAY_*` names (for example `MPD_DISPLAY_LAYOUT`) when the `ENCORE_*` variable is unset.
 
 | Variable | Description |
 | --- | --- |
@@ -117,6 +141,7 @@ The `ENCORE_*` variables also accept their older `MPD_DISPLAY_*` names (for exam
 | `ENCORE_LYRICS_ALIGN` | `left`, `center`, `right` or `right-left` (the right-hand column with left-aligned lines): alignment of the Spotify layout's lyrics. Defaults to `right`. |
 | `ENCORE_LYRICS_FLOW` | `classic`, `stacked` or `scrolling`: how the Spotify layout's synced lyrics move. Defaults to `stacked`. |
 | `ENCORE_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable LRCLIB lookups. Enabled by default. |
+| `ENCORE_CLOCK` | `on` or `off`: the date and clock overlay at startup (`t` toggles it). Defaults to `on`. |
 
 ## Exporting lyric clips
 Renders a share-ready MP4 of the Apple, Vibrant or Spotify layout (lyrics, album art, title and progress bar) for a chosen part of the current song. Rendering happens offline in the background on the GPU while the display keeps running; with the CPU encoding at the same time, a clip with the moving backdrop takes a few times its own length to export. Requires `ffmpeg` with libx264 and aac.

@@ -21,6 +21,7 @@ fn main() {
         eprintln!("failed to initialise logger: {e}");
     }
 
+    config::write_starter_config();
     let config = Config::from_env();
     info!(
         "MPD at {}:{}, layout {:?}, lyrics {}",

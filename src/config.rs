@@ -1,3 +1,6 @@
+mod file;
+
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use log::warn;
@@ -106,7 +109,7 @@ impl LyricsFlow {
 
 impl Config {
     /// Whether `layout` starts with the artist image as its background:
-    /// `ENCORE_ARTIST_BG` when set, else only for the Spotify layout.
+    /// `ENCORE_ARTIST_BG` or `artist_bg` when set, else only for the Spotify layout.
     pub fn artist_bg(&self, layout: Layout) -> bool {
         self.artist_bg.unwrap_or(layout == Layout::Spotify)
     }
@@ -117,16 +120,17 @@ pub struct Config {
     pub mpd_host: String,
     pub mpd_port: u16,
     pub mpd_password: Option<String>,
-    /// MPD music root: `MPD_MUSIC_DIR`, else `music_directory` from MPD's config file.
+    /// MPD music root: `MPD_MUSIC_DIR` or `[mpd] music_dir`, else `music_directory` from MPD's
+    /// config file.
     pub music_dir: Option<PathBuf>,
-    /// Folder for exported clips: `ENCORE_EXPORT_DIR`, else `<videos>/encore`.
+    /// Folder for exported clips: `ENCORE_EXPORT_DIR` or `export_dir`, else `<videos>/encore`.
     pub export_dir: PathBuf,
     pub layout: Layout,
     pub lyrics_enabled: bool,
     pub lyrics_online: bool,
     /// Animated backdrop behind the Apple and Vibrant layouts.
     pub motion: bool,
-    /// `ENCORE_ARTIST_BG` for every layout; see [`Config::artist_bg`].
+    /// `ENCORE_ARTIST_BG` or `artist_bg` for every layout; see [`Config::artist_bg`].
     pub artist_bg: Option<bool>,
     /// Text, icons and bars take their colours from the album art.
     pub tint: bool,
@@ -134,18 +138,19 @@ pub struct Config {
     pub skip_buttons: bool,
     pub lyrics_align: LyricsAlign,
     pub lyrics_flow: LyricsFlow,
+    /// Date and clock overlay shown at startup.
+    pub clock: bool,
 }
 
 impl Config {
+    /// Reads the environment variables and the config file, the variables taking precedence.
     pub fn from_env() -> Self {
+        let file_values = config_file_path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|text| file::parse(&text))
+            .unwrap_or_default();
         Self::from_sources(
-            |key| match std::env::var(key) {
-                Ok(v) => Some(v),
-                Err(_) if key == "HOME" => {
-                    dirs::home_dir().map(|h| h.to_string_lossy().into_owned())
-                }
-                Err(_) => None,
-            },
+            layered(env_var, &file_values),
             |path| std::fs::read_to_string(path).ok(),
             dirs::video_dir(),
         )
@@ -262,6 +267,7 @@ impl Config {
             skip_buttons: get("ENCORE_SKIP_BUTTONS").is_none_or(|v| !is_off(&v)),
             lyrics_align,
             lyrics_flow,
+            clock: get("ENCORE_CLOCK").is_none_or(|v| !is_off(&v)),
         }
     }
 
@@ -271,6 +277,43 @@ impl Config {
             Some(pass) => format!("{pass}@{}", self.mpd_host),
             None => self.mpd_host.clone(),
         }
+    }
+}
+
+/// An environment variable, with `HOME` falling back to the platform's home directory.
+fn env_var(key: &str) -> Option<String> {
+    match std::env::var(key) {
+        Ok(v) => Some(v),
+        Err(_) if key == "HOME" => dirs::home_dir().map(|h| h.to_string_lossy().into_owned()),
+        Err(_) => None,
+    }
+}
+
+/// Path of the config file, from `XDG_CONFIG_HOME` or the home directory.
+fn config_file_path() -> Option<PathBuf> {
+    let xdg = env_var("XDG_CONFIG_HOME")
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from);
+    file::path(xdg, env_var("HOME").map(PathBuf::from).as_deref())
+}
+
+/// Writes a commented starter config file when there is none.
+pub fn write_starter_config() {
+    if let Some(path) = config_file_path() {
+        file::write_starter_if_missing(&path);
+    }
+}
+
+/// A lookup of the variables in `env` (including their legacy names) that falls back to the
+/// config file's settings, so a variable always overrides the file.
+fn layered<'a>(
+    env: impl Fn(&str) -> Option<String> + 'a,
+    file_values: &'a HashMap<&'static str, String>,
+) -> impl Fn(&str) -> Option<String> + 'a {
+    move |key| {
+        lookup_with_legacy(&env, key)
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| file_values.get(key).cloned())
     }
 }
 
@@ -372,6 +415,67 @@ mod tests {
         assert!(cfg.skip_buttons);
         assert_eq!(cfg.lyrics_align, LyricsAlign::Right);
         assert_eq!(cfg.lyrics_flow, LyricsFlow::Stacked);
+        assert!(cfg.clock);
+    }
+
+    #[test]
+    fn clock_switch() {
+        assert!(!parse(&[("ENCORE_CLOCK", "off")]).clock);
+        assert!(parse(&[("ENCORE_CLOCK", "on")]).clock);
+    }
+
+    #[test]
+    fn variables_override_the_config_file() {
+        let file_values = file::parse(
+            r#"
+            layout = "vibrant"
+            tint = false
+            clock = false
+            [mpd]
+            host = "file.lan"
+            port = 6601
+            "#,
+        );
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |key: &str| {
+                vars.iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        let load = |vars| Config::from_sources(layered(env(vars), &file_values), |_| None, None);
+
+        let cfg = load(&[]);
+        assert_eq!(cfg.layout, Layout::Vibrant);
+        assert!(!cfg.tint);
+        assert!(!cfg.clock);
+        assert_eq!(cfg.mpd_host, "file.lan");
+        assert_eq!(cfg.mpd_port, 6601);
+        assert!(cfg.motion);
+
+        let cfg = load(&[
+            ("ENCORE_LAYOUT", "spotify"),
+            ("ENCORE_TINT", "on"),
+            ("MPD_PORT", "6700"),
+        ]);
+        assert_eq!(cfg.layout, Layout::Spotify);
+        assert!(cfg.tint);
+        assert!(!cfg.clock);
+        assert_eq!(cfg.mpd_host, "file.lan");
+        assert_eq!(cfg.mpd_port, 6700);
+
+        // A legacy variable still beats the file, and an empty variable does not.
+        let cfg = load(&[("MPD_DISPLAY_LAYOUT", "apple"), ("ENCORE_TINT", " ")]);
+        assert_eq!(cfg.layout, Layout::Apple);
+        assert!(!cfg.tint);
+    }
+
+    #[test]
+    fn starter_config_gives_the_defaults() {
+        let file_values = file::parse(file::STARTER);
+        let from_file = Config::from_sources(layered(|_| None, &file_values), |_| None, None);
+        let defaults = parse(&[]);
+        assert_eq!(format!("{from_file:?}"), format!("{defaults:?}"));
     }
 
     #[test]
