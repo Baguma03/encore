@@ -42,7 +42,7 @@ const MAX_SMEAR: f32 = 0.4;
 const PREVIOUS_ALPHA: f32 = 0.28;
 const NEXT_ALPHA: f32 = 0.35;
 /// Opacity of the line after the next one, barely visible below it.
-const AFTER_NEXT_ALPHA: f32 = 0.11;
+const AFTER_NEXT_ALPHA: f32 = 0.04;
 /// Size of the lines around the active one relative to it, as in the Apple layout.
 const SIDE_SCALE: f32 = 0.9;
 
