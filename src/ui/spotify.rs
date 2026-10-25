@@ -41,6 +41,8 @@ const MAX_SMEAR: f32 = 0.4;
 /// Opacity of the line above and below the active one.
 const PREVIOUS_ALPHA: f32 = 0.28;
 const NEXT_ALPHA: f32 = 0.35;
+/// Opacity of the line after the next one, barely visible below it.
+const AFTER_NEXT_ALPHA: f32 = 0.11;
 /// Size of the lines around the active one relative to it, as in the Apple layout.
 const SIDE_SCALE: f32 = 0.9;
 
@@ -466,18 +468,22 @@ pub fn lyric_entries(lyrics: &Lyrics, elapsed: Duration, progress: f32) -> (Vec<
 }
 
 /// Opacity of an entry `distance` lines below the scroll position (negative above it): full
-/// on the active line, dimmed on its neighbours and gone two lines away.
+/// on the active line, dimmed on its neighbours, barely visible on the line after the next one
+/// and gone beyond it and two lines above.
 pub fn trio_alpha(distance: f32) -> f32 {
-    let side = if distance < 0.0 {
-        PREVIOUS_ALPHA
-    } else {
-        NEXT_ALPHA
-    };
-    let d = distance.abs();
-    if d <= 1.0 {
-        lerp(1.0, side, d)
-    } else {
-        lerp(side, 0.0, (d - 1.0).min(1.0))
+    if distance < 0.0 {
+        let d = -distance;
+        return if d <= 1.0 {
+            lerp(1.0, PREVIOUS_ALPHA, d)
+        } else {
+            lerp(PREVIOUS_ALPHA, 0.0, (d - 1.0).min(1.0))
+        };
+    }
+    const BELOW: [f32; 4] = [1.0, NEXT_ALPHA, AFTER_NEXT_ALPHA, 0.0];
+    let i = distance.floor() as usize;
+    match (BELOW.get(i), BELOW.get(i + 1)) {
+        (Some(&a), Some(&b)) => lerp(a, b, distance.fract()),
+        _ => 0.0,
     }
 }
 
@@ -607,8 +613,8 @@ fn aligned_x(rect: Rect, halign: Align) -> f32 {
 }
 
 /// The lyrics in `color` within `area`, aligned as the view asks with the active line's top at
-/// height `slot`: three lines, or synced lyrics in the stacked flow. `base` is the active line's
-/// font size.
+/// height `slot`: the classic four lines, or synced lyrics in the stacked flow. `base` is the
+/// active line's font size. Lines dissolve towards the area's top and bottom edges.
 fn paint_lyrics(
     ui: &egui::Ui,
     painter: &Painter,
@@ -658,9 +664,10 @@ struct Lines<'a> {
     color: Color32,
 }
 
-/// Three lines with the active one's top at the slot: the previous one dimmed above it and the
-/// next one below, scrolling up as the song moves on. Lines fade out where they leave `rect`.
-/// `synced` lyrics start with a gap marker; the scroll is kept under `id`.
+/// Four lines with the active one's top at the slot: the previous one dimmed above it, the next
+/// one below and the one after that barely visible under it, scrolling up as the song moves on.
+/// Lines dissolve where they cross the edges of `rect`. `synced` lyrics start with a gap
+/// marker; the scroll is kept under `id`.
 fn paint_classic(
     ui: &egui::Ui,
     painter: &Painter,
@@ -684,7 +691,7 @@ fn paint_classic(
 
     // Entries around the position, stacked from the top with their sizes for this frame.
     let first = (position.floor() as isize - 2).max(0) as usize;
-    let last = (position.ceil() as usize + 2).min(entries.len() - 1);
+    let last = (position.ceil() as usize + 3).min(entries.len() - 1);
     let gap = base * 0.75;
     let mut y = 0.0;
     let mut laid_out = Vec::with_capacity(last + 1 - first);
@@ -719,19 +726,13 @@ fn paint_classic(
             continue;
         }
         let pos = Pos2::new(x, slot + top - here);
-        let height = galley.size().y;
-        let above = ((pos.y + height - rect.top()) / height).clamp(0.0, 1.0);
-        let below = ((rect.bottom() - pos.y) / height).clamp(0.0, 1.0);
-        let a = a * above * above * below * below;
-        if a > 0.0 {
-            painter.galley_with_override_text_color(pos, galley, with_alpha(color, a));
-        }
+        paint_edge_faded(painter, pos, &galley, with_alpha(color, a), 0.0, rect, base);
     }
 }
 
 /// Synced lyrics with the active line's top at the slot, brightest, and the three after it
 /// fading out below. On a new line the stack slides up, the outgoing line fading as it leaves
-/// and the lines smearing while they move. Lines fade out where they pass the bottom of `rect`.
+/// and the lines smearing while they move. Lines dissolve where they cross the edges of `rect`.
 fn paint_stacked(ui: &egui::Ui, painter: &Painter, rect: Rect, lines: &Lines, id: Id) {
     let Lines {
         entries,
@@ -768,21 +769,68 @@ fn paint_stacked(ui: &egui::Ui, painter: &Painter, rect: Rect, lines: &Lines, id
         _ => 0.0,
     };
 
-    // Lines leave upwards past the slot and fade out where they pass the bottom.
+    // Lines leave upwards past the slot and dissolve where they cross the area's edges.
     let clip = Rect::from_x_y_ranges(
         painter.clip_rect().x_range(),
         (slot - base * 3.0).max(rect.top())..=rect.bottom(),
     );
     let painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
     for (distance, top, galley) in laid_out {
-        let y = slot + top - here;
-        let half = galley.size().y / 2.0;
-        let fade = ((rect.bottom() - y - half) / half).clamp(0.0, 1.0);
-        let a = stack_alpha(distance) * fade * fade * (3.0 - 2.0 * fade);
+        let a = stack_alpha(distance);
         if a > 0.0 {
-            let pos = Pos2::new(x, y);
-            paint_smeared_galley(&painter, pos, &galley, with_alpha(color, a), smear);
+            let pos = Pos2::new(x, slot + top - here);
+            paint_edge_faded(
+                &painter,
+                pos,
+                &galley,
+                with_alpha(color, a),
+                smear,
+                rect,
+                base,
+            );
         }
+    }
+}
+
+/// Paints `galley` at `pos` in `color`, smeared vertically by `smear`, with the glyphs fading to
+/// transparent over `length` towards the top and bottom of `area`, so rows crossing an edge
+/// dissolve rather than end in a hard cut. Nothing is drawn beyond the edges. The fades are
+/// thin pixel-aligned strips, each a clipped copy of the galley at its own opacity.
+fn paint_edge_faded(
+    painter: &Painter,
+    pos: Pos2,
+    galley: &Arc<Galley>,
+    color: Color32,
+    smear: f32,
+    area: Rect,
+    length: f32,
+) {
+    let (top, bottom) = (pos.y - smear / 2.0, pos.y + galley.size().y + smear / 2.0);
+    let length = length.min(area.height() / 2.0).max(0.0);
+    let ppp = painter.pixels_per_point();
+    let snap = |y: f32| (y * ppp).round() / ppp;
+    let x_range = painter.clip_rect().x_range();
+    let paint_band = |from: f32, to: f32, a: f32| {
+        let (from, to) = (snap(from), snap(to));
+        if to <= from || to <= top || from >= bottom || a <= 0.0 {
+            return;
+        }
+        let clip = Rect::from_x_y_ranges(x_range, from..=to).intersect(painter.clip_rect());
+        let band = painter.with_clip_rect(clip);
+        paint_smeared_galley(&band, pos, galley, with_alpha(color, a), smear);
+    };
+
+    let (inner_top, inner_bottom) = (area.top() + length, area.bottom() - length);
+    paint_band(inner_top, inner_bottom, 1.0);
+    // Two physical pixels per strip.
+    let strips = ((length * ppp / 2.0).ceil() as usize).max(1);
+    let step = length / strips as f32;
+    for k in 0..strips {
+        let t = (k as f32 + 0.5) / strips as f32;
+        let a = t * t * (3.0 - 2.0 * t);
+        let offset = k as f32 * step;
+        paint_band(area.top() + offset, area.top() + offset + step, a);
+        paint_band(inner_bottom + offset, inner_bottom + offset + step, 1.0 - a);
     }
 }
 
@@ -980,14 +1028,18 @@ mod tests {
     }
 
     #[test]
-    fn three_lines_are_visible() {
+    fn four_lines_are_visible() {
         assert_eq!(trio_alpha(0.0), 1.0);
         assert!((trio_alpha(-1.0) - PREVIOUS_ALPHA).abs() < 1e-6);
         assert!((trio_alpha(1.0) - NEXT_ALPHA).abs() < 1e-6);
         assert!(trio_alpha(1.0) > trio_alpha(-1.0));
-        assert_eq!(trio_alpha(2.0), 0.0);
+        assert!((trio_alpha(2.0) - AFTER_NEXT_ALPHA).abs() < 1e-6);
+        assert!(trio_alpha(2.0) < trio_alpha(-1.0));
+        assert_eq!(trio_alpha(3.0), 0.0);
+        assert_eq!(trio_alpha(-2.0), 0.0);
         assert_eq!(trio_alpha(-2.5), 0.0);
-        assert!(trio_alpha(1.5) > 0.0 && trio_alpha(1.5) < NEXT_ALPHA);
+        assert!(trio_alpha(1.5) > AFTER_NEXT_ALPHA && trio_alpha(1.5) < NEXT_ALPHA);
+        assert!(trio_alpha(2.5) > 0.0 && trio_alpha(2.5) < AFTER_NEXT_ALPHA);
         assert_eq!(trio_scale(0.0), 1.0);
         assert_eq!(trio_scale(-3.0), SIDE_SCALE);
         assert!(trio_scale(0.5) > SIDE_SCALE && trio_scale(0.5) < 1.0);
