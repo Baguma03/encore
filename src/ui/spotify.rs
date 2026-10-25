@@ -46,6 +46,10 @@ const SIDE_SCALE: f32 = 0.9;
 
 /// Song progress from which the Up next card shows.
 const UP_NEXT_AT: f32 = 0.9;
+/// Height of the active lyric line's top above the album art, relative to the art's height.
+const ACTIVE_LINE_RISE: f32 = 0.6;
+/// Space between the lyrics and the title, relative to the gap between the art and the title.
+const LYRICS_BOTTOM_GAP: f32 = 1.5;
 /// Corner radius of the album art relative to its size.
 const ART_RADIUS: f32 = 0.035;
 
@@ -232,23 +236,25 @@ fn paint(
     let card_t = paint_up_next(ui, painter, &card, corner, view, &scheme);
 
     // Lyrics in a column as wide as the Apple layout's, placed by the view's alignment between
-    // the title's left edge and the play button's right edge. They rest on the title, as far
-    // above it as the title is from the art; while the Up next card shows, the area's top moves
-    // below it when the column reaches under the card.
+    // the title's left edge and the play button's right edge. The active line's top stays at
+    // `slot`, 60% of the art's height above the art; lines end one and a half art-to-title gaps
+    // above the title. While the Up next card shows, the area's top moves below it when the
+    // column reaches under the card, never past the active line.
     let x_range = lyrics_x_range(block, w, view.lyrics_align);
     let under_corner = x_range.max > corner.x - card.width - w * 0.02;
     let top = origin.y + h * 0.06;
-    let bottom = block.title.y - (block.title.x - art_rect.right());
+    let bottom = block.title.y - LYRICS_BOTTOM_GAP * (block.title.x - art_rect.right());
     let card_t = if under_corner { card_t } else { 0.0 };
     if bottom > top && x_range.span() > 0.0 {
         // The Apple layout's lyric size at the same window size.
         let base = (h / 22.0).min(x_range.span() / 14.0);
+        let slot = (art_rect.top() - ACTIVE_LINE_RISE * art_rect.height()).clamp(top, bottom);
         let card_bottom = corner.y + card.height() + h * 0.04;
         let area = Rect::from_x_y_ranges(
             x_range,
-            lerp(top, card_bottom, ease(card_t)).min(bottom)..=bottom,
+            lerp(top, card_bottom, ease(card_t)).min(slot)..=bottom,
         );
-        paint_lyrics(ui, painter, area, base, view, scheme.text);
+        paint_lyrics(ui, painter, area, slot, base, view, scheme.text);
     }
     command
 }
@@ -523,13 +529,16 @@ impl Scroll {
 
 /// Horizontal extent of the lyrics on a screen `width` wide: a column as wide as the Apple
 /// layout's lyrics, no wider than the span from the title's left edge to the play button's
-/// right edge, starting at the span's left edge, ending at its right edge or centred in it.
+/// right edge, starting at the span's left edge, ending at its right edge (for both right-hand
+/// alignments) or centred in it.
 fn lyrics_x_range(block: &Block, width: f32, align: LyricsAlign) -> egui::Rangef {
     let (left, right) = (block.title.x, block.play.right().max(block.title.x));
     let column = apple::lyrics_width(width).min(right - left);
     match align {
         LyricsAlign::Left => egui::Rangef::new(left, left + column),
-        LyricsAlign::Right => egui::Rangef::new(right - column, right),
+        LyricsAlign::Right | LyricsAlign::RightColumnLeftText => {
+            egui::Rangef::new(right - column, right)
+        }
         LyricsAlign::Center => {
             let center = (left + right) / 2.0;
             egui::Rangef::new(center - column / 2.0, center + column / 2.0)
@@ -540,7 +549,7 @@ fn lyrics_x_range(block: &Block, width: f32, align: LyricsAlign) -> egui::Rangef
 /// Text alignment within the lyrics' extent.
 fn lyrics_halign(align: LyricsAlign) -> Align {
     match align {
-        LyricsAlign::Left => Align::Min,
+        LyricsAlign::Left | LyricsAlign::RightColumnLeftText => Align::Min,
         LyricsAlign::Center => Align::Center,
         LyricsAlign::Right => Align::Max,
     }
@@ -597,12 +606,14 @@ fn aligned_x(rect: Rect, halign: Align) -> f32 {
     }
 }
 
-/// The lyrics in `color` within `area`, aligned as the view asks and resting on its bottom:
-/// three lines, or synced lyrics in the stacked flow. `base` is the active line's font size.
+/// The lyrics in `color` within `area`, aligned as the view asks with the active line's top at
+/// height `slot`: three lines, or synced lyrics in the stacked flow. `base` is the active line's
+/// font size.
 fn paint_lyrics(
     ui: &egui::Ui,
     painter: &Painter,
     area: Rect,
+    slot: f32,
     base: f32,
     view: &View,
     color: Color32,
@@ -623,6 +634,7 @@ fn paint_lyrics(
     let lines = Lines {
         entries: &entries,
         active,
+        slot,
         base,
         halign,
         color,
@@ -638,16 +650,17 @@ fn paint_lyrics(
 struct Lines<'a> {
     entries: &'a [String],
     active: usize,
+    /// Height of the active line's top.
+    slot: f32,
     /// Font size of the active line.
     base: f32,
     halign: Align,
     color: Color32,
 }
 
-/// Three lines resting on the bottom of `rect`: the previous one dimmed above the active one
-/// and the next one below, scrolling up as the song moves on. Lines fade out where they leave
-/// `rect`, so wrapped lines that do not fit lose the top of the three first. `synced` lyrics
-/// start with a gap marker; the scroll is kept under `id`.
+/// Three lines with the active one's top at the slot: the previous one dimmed above it and the
+/// next one below, scrolling up as the song moves on. Lines fade out where they leave `rect`.
+/// `synced` lyrics start with a gap marker; the scroll is kept under `id`.
 fn paint_classic(
     ui: &egui::Ui,
     painter: &Painter,
@@ -659,6 +672,7 @@ fn paint_classic(
     let Lines {
         entries,
         active,
+        slot,
         base,
         halign,
         color,
@@ -687,26 +701,14 @@ fn paint_classic(
         laid_out.push((distance, y, galley));
         y += height + gap;
     }
-    let center_of = |i: usize| {
-        laid_out
-            .get(i.saturating_sub(first))
-            .map(|(_, top, g)| top + g.size().y / 2.0)
-    };
+    let top_of = |i: usize| laid_out.get(i.checked_sub(first)?).map(|(_, top, _)| *top);
     let below = position.floor().max(0.0) as usize;
-    let frac = position - below as f32;
-    let here = match (center_of(below), center_of(below + 1)) {
-        (Some(a), Some(b)) => lerp(a, b, frac),
+    let here = match (top_of(below), top_of(below + 1)) {
+        (Some(a), Some(b)) => lerp(a, b, position - below as f32),
         (Some(a), None) => a,
         _ => 0.0,
     };
 
-    // The scroll position's centre sits where the next line's bottom lands on the area's bottom
-    // at rest, moving between the resting places of the two entries either side of it.
-    let rest = |i: usize| rect.bottom() - classic_rest_offset(painter, lines, i, rect.width(), gap);
-    let anchor = match below + 1 < entries.len() {
-        true => lerp(rest(below), rest(below + 1), frac),
-        false => rest(below.min(entries.len() - 1)),
-    };
     for (i, (distance, top, galley)) in laid_out.into_iter().enumerate() {
         let mut a = trio_alpha(distance);
         // The marker before the first line only shows while it is the active entry.
@@ -716,7 +718,7 @@ fn paint_classic(
         if a <= 0.0 {
             continue;
         }
-        let pos = Pos2::new(x, anchor + top - here);
+        let pos = Pos2::new(x, slot + top - here);
         let height = galley.size().y;
         let above = ((pos.y + height - rect.top()) / height).clamp(0.0, 1.0);
         let below = ((rect.bottom() - pos.y) / height).clamp(0.0, 1.0);
@@ -727,14 +729,14 @@ fn paint_classic(
     }
 }
 
-/// Synced lyrics resting on the bottom of `rect`: the active line brightest, the three after
-/// it fading out below. On a new line the stack slides up, the outgoing line fading as
-/// it leaves and the lines smearing while they move. A stack taller than `rect` keeps the
-/// active line at the top and fades out the lines below the bottom.
+/// Synced lyrics with the active line's top at the slot, brightest, and the three after it
+/// fading out below. On a new line the stack slides up, the outgoing line fading as it leaves
+/// and the lines smearing while they move. Lines fade out where they pass the bottom of `rect`.
 fn paint_stacked(ui: &egui::Ui, painter: &Painter, rect: Rect, lines: &Lines, id: Id) {
     let Lines {
         entries,
         active,
+        slot,
         base,
         halign,
         color,
@@ -766,24 +768,14 @@ fn paint_stacked(ui: &egui::Ui, painter: &Painter, rect: Rect, lines: &Lines, id
         _ => 0.0,
     };
 
-    // The active line's top sits where the resting stack's bottom lands on the area's bottom,
-    // moving between the resting places of the two entries either side of the scroll position.
-    let rest = |i: usize| {
-        (rect.bottom() - stack_rest_height(painter, lines, i, rect.width(), gap)).max(rect.top())
-    };
-    let anchor = match below + 1 < entries.len() {
-        true => lerp(rest(below), rest(below + 1), position - below as f32),
-        false => rest(below.min(entries.len() - 1)),
-    };
-
-    // Lines leave upwards past the anchor and fade out where they pass the bottom.
+    // Lines leave upwards past the slot and fade out where they pass the bottom.
     let clip = Rect::from_x_y_ranges(
         painter.clip_rect().x_range(),
-        anchor - base * 3.0..=rect.bottom(),
+        (slot - base * 3.0).max(rect.top())..=rect.bottom(),
     );
     let painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
     for (distance, top, galley) in laid_out {
-        let y = anchor + top - here;
+        let y = slot + top - here;
         let half = galley.size().y / 2.0;
         let fade = ((rect.bottom() - y - half) / half).clamp(0.0, 1.0);
         let a = stack_alpha(distance) * fade * fade * (3.0 - 2.0 * fade);
@@ -792,44 +784,6 @@ fn paint_stacked(ui: &egui::Ui, painter: &Painter, rect: Rect, lines: &Lines, id
             paint_smeared_galley(&painter, pos, &galley, with_alpha(color, a), smear);
         }
     }
-}
-
-/// Distance from the centre of entry `i` to the bottom of the entry after it (or its own
-/// bottom when it is the last) with `i` active and at rest, wrapped at `width`, `gap` apart.
-fn classic_rest_offset(painter: &Painter, lines: &Lines, i: usize, width: f32, gap: f32) -> f32 {
-    let height = |i: usize, scale: f32| {
-        aligned(
-            painter,
-            &lines.entries[i],
-            font_bold(lines.base * scale),
-            width,
-            lines.halign,
-        )
-        .size()
-        .y
-    };
-    let active = height(i, 1.0);
-    match lines.entries.get(i + 1) {
-        Some(_) => active / 2.0 + gap + height(i + 1, SIDE_SCALE),
-        None => active / 2.0,
-    }
-}
-
-/// Height of the stack from entry `i`, active and at rest, to the last line still showing
-/// below it, wrapped at `width`, `gap` apart.
-fn stack_rest_height(painter: &Painter, lines: &Lines, i: usize, width: f32, gap: f32) -> f32 {
-    let shown = STACK_ALPHA.iter().take_while(|&&a| a > 0.0).count();
-    let last = (i + shown - 1).min(lines.entries.len() - 1);
-    (i..=last)
-        .map(|j| {
-            let scale = if j == i { 1.0 } else { SIDE_SCALE };
-            let font = font_bold(lines.base * scale);
-            aligned(painter, &lines.entries[j], font, width, lines.halign)
-                .size()
-                .y
-        })
-        .sum::<f32>()
-        + gap * (last - i) as f32
 }
 
 /// Whether the Up next card is due: the last stretch of a song with another one queued.
@@ -1120,6 +1074,9 @@ mod tests {
         let center = range(LyricsAlign::Center);
         assert!((center.center() - (b.title.x + b.play.right()) / 2.0).abs() < 1e-3);
         assert!((center.span() - column).abs() < 1e-3);
+        assert_eq!(range(LyricsAlign::RightColumnLeftText), right);
+        assert_eq!(lyrics_halign(LyricsAlign::RightColumnLeftText), Align::Min);
+        assert_eq!(lyrics_halign(LyricsAlign::Right), Align::Max);
 
         // A narrow screen clamps the column to the span.
         let narrow = Block::new(

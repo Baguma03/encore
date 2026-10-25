@@ -26,24 +26,33 @@ impl Layout {
 /// Horizontal alignment of the Spotify layout's lyrics.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum LyricsAlign {
-    /// Left edge on the album art's left edge.
+    /// Left edge on the title's left edge.
     Left,
-    /// Centred over the space right of the art.
+    /// Centred between the title's left edge and the play button's right edge.
     Center,
     /// Right edge on the play button's right edge.
     #[default]
     Right,
+    /// The right-hand column, its lines left-aligned within it.
+    RightColumnLeftText,
 }
 
 impl LyricsAlign {
-    pub const ALL: [LyricsAlign; 3] = [LyricsAlign::Left, LyricsAlign::Center, LyricsAlign::Right];
+    pub const ALL: [LyricsAlign; 4] = [
+        LyricsAlign::Left,
+        LyricsAlign::Center,
+        LyricsAlign::Right,
+        LyricsAlign::RightColumnLeftText,
+    ];
 
-    /// The alignment after this one in the cycle Left → Center → Right.
+    /// The alignment after this one in the cycle Left → Center → Right → right column with
+    /// left-aligned lines.
     pub fn next(self) -> Self {
         match self {
             LyricsAlign::Left => LyricsAlign::Center,
             LyricsAlign::Center => LyricsAlign::Right,
-            LyricsAlign::Right => LyricsAlign::Left,
+            LyricsAlign::Right => LyricsAlign::RightColumnLeftText,
+            LyricsAlign::RightColumnLeftText => LyricsAlign::Left,
         }
     }
 
@@ -52,6 +61,7 @@ impl LyricsAlign {
             LyricsAlign::Left => "Left",
             LyricsAlign::Center => "Center",
             LyricsAlign::Right => "Right",
+            LyricsAlign::RightColumnLeftText => "Right, left-aligned",
         }
     }
 }
@@ -192,6 +202,7 @@ impl Config {
             Some("left") => LyricsAlign::Left,
             Some("center" | "centre") => LyricsAlign::Center,
             Some("right") | None => LyricsAlign::Right,
+            Some("right-left") => LyricsAlign::RightColumnLeftText,
             Some(other) => {
                 warn!("unknown ENCORE_LYRICS_ALIGN {other:?}, using right");
                 LyricsAlign::Right
@@ -370,10 +381,12 @@ mod tests {
         assert_eq!(align(" Center "), LyricsAlign::Center);
         assert_eq!(align("centre"), LyricsAlign::Center);
         assert_eq!(align("RIGHT"), LyricsAlign::Right);
+        assert_eq!(align("Right-Left"), LyricsAlign::RightColumnLeftText);
         assert_eq!(align("diagonal"), LyricsAlign::Right);
         assert_eq!(LyricsAlign::Left.next(), LyricsAlign::Center);
         assert_eq!(LyricsAlign::Center.next(), LyricsAlign::Right);
-        assert_eq!(LyricsAlign::Right.next(), LyricsAlign::Left);
+        assert_eq!(LyricsAlign::Right.next(), LyricsAlign::RightColumnLeftText);
+        assert_eq!(LyricsAlign::RightColumnLeftText.next(), LyricsAlign::Left);
     }
 
     #[test]

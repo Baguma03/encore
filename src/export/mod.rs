@@ -1033,6 +1033,7 @@ mod tests {
             lyrics_align: match std::env::var("ENCORE_TEST_LYRICS_ALIGN").as_deref() {
                 Ok("left") => LyricsAlign::Left,
                 Ok("center") => LyricsAlign::Center,
+                Ok("right-left") => LyricsAlign::RightColumnLeftText,
                 _ => LyricsAlign::Right,
             },
             lyrics_flow: match std::env::var("ENCORE_TEST_LYRICS_FLOW").as_deref() {
