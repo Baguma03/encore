@@ -26,3 +26,7 @@ log = "0.4.21"
 simple_logger = { version = "1.11", default-features = false, features = ["colors"] }
 mpd = "0.1.0"
 toml = "1.1.8"
+
+# Dependencies build without debug info, which keeps target/debug small.
+[profile.dev.package."*"]
+debug = false
