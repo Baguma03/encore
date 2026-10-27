@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
-use egui::{Event, Key, ViewportCommand};
+use egui::{Event, Key, Modifiers, ViewportCommand};
 use encore::lyrics::{Lyrics, LyricsConfig, LyricsProvider, LyricsState};
 
 use crate::art::ArtLoader;
@@ -20,6 +20,7 @@ const MARK_TOAST: Duration = Duration::from_secs(2);
 const SAVED_TOAST: Duration = Duration::from_secs(8);
 const FAILED_TOAST: Duration = Duration::from_secs(10);
 const CANCELLED_TOAST: Duration = Duration::from_secs(3);
+const HINT_TOAST: Duration = Duration::from_millis(4500);
 
 /// What a key press does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,11 +45,14 @@ enum Action {
     CloseExport,
     MarkIn,
     MarkOut,
+    Shortcuts,
+    CloseShortcuts,
 }
 
 /// Maps a key to its action. While the export panel is open only closing it and fullscreen
-/// work, so keys meant for the panel never reach playback.
-fn key_action(key: Key, panel_open: bool) -> Option<Action> {
+/// work, so keys meant for the panel never reach playback. While the shortcuts overlay is open
+/// Escape closes it instead of quitting.
+fn key_action(key: Key, panel_open: bool, overlay_open: bool) -> Option<Action> {
     if panel_open {
         return match key {
             Key::E | Key::Escape => Some(Action::CloseExport),
@@ -57,6 +61,7 @@ fn key_action(key: Key, panel_open: bool) -> Option<Action> {
         };
     }
     Some(match key {
+        Key::Escape if overlay_open => Action::CloseShortcuts,
         Key::F | Key::F11 => Action::Fullscreen,
         Key::C => Action::Cursor,
         Key::D => Action::Debug,
@@ -76,8 +81,19 @@ fn key_action(key: Key, panel_open: bool) -> Option<Action> {
         Key::E => Action::OpenExport,
         Key::OpenBracket => Action::MarkIn,
         Key::CloseBracket => Action::MarkOut,
+        Key::Questionmark | Key::H => Action::Shortcuts,
         _ => return None,
     })
+}
+
+/// The key a press stands for. Shift+/ reports as `?` on most systems; this catches the
+/// platforms that report the unshifted key instead.
+fn pressed_key(key: Key, modifiers: Modifiers) -> Key {
+    if key == Key::Slash && modifiers.shift {
+        Key::Questionmark
+    } else {
+        key
+    }
 }
 
 pub struct App {
@@ -108,6 +124,7 @@ pub struct App {
     export_job: Option<ExportJob>,
     export_queue: VecDeque<ExportRequest>,
     toasts: Toasts,
+    show_shortcuts: bool,
 }
 
 impl App {
@@ -128,6 +145,11 @@ impl App {
             },
             Box::new(move || ctx.request_repaint()),
         );
+
+        let mut toasts = Toasts::default();
+        if config.hint {
+            toasts.push(Toast::new("Press ? for shortcuts", HINT_TOAST));
+        }
 
         Self {
             layout: config.layout,
@@ -156,7 +178,8 @@ impl App {
             marks_song: None,
             export_job: None,
             export_queue: VecDeque::new(),
-            toasts: Toasts::default(),
+            toasts,
+            show_shortcuts: false,
         }
     }
 
@@ -169,14 +192,16 @@ impl App {
                         key,
                         pressed: true,
                         repeat: false,
+                        modifiers,
                         ..
-                    } => Some(*key),
+                    } => Some(pressed_key(*key, *modifiers)),
                     _ => None,
                 })
                 .collect()
         });
         for key in keys {
-            if let Some(action) = key_action(key, self.export_panel.is_some()) {
+            let panel_open = self.export_panel.is_some();
+            if let Some(action) = key_action(key, panel_open, self.show_shortcuts) {
                 self.run_action(ctx, action, state);
             }
         }
@@ -211,6 +236,7 @@ impl App {
             Action::Next => self.player.send(Command::Next),
             Action::OpenExport => {
                 if let Some(song) = &state.current {
+                    self.show_shortcuts = false;
                     self.open_export_panel(song.clone(), state.next.clone(), state.elapsed());
                 }
             }
@@ -229,6 +255,8 @@ impl App {
                 self.toasts.replace(label, toast);
             }
             Action::MarkIn | Action::MarkOut => {}
+            Action::Shortcuts => self.show_shortcuts = !self.show_shortcuts,
+            Action::CloseShortcuts => self.show_shortcuts = false,
         }
     }
 
@@ -398,8 +426,9 @@ impl App {
             Layout::Apple => ui::apple::draw(ui, &view),
             Layout::Vibrant => ui::vibrant::draw(ui, &view),
         };
-        // The export panel's backdrop blocks clicks; this guards against any that slip through.
-        if let Some(cmd) = cmd.filter(|_| self.export_panel.is_none()) {
+        // The export panel's backdrop and the shortcuts overlay block clicks; this guards against
+        // any that slip through.
+        if let Some(cmd) = cmd.filter(|_| self.export_panel.is_none() && !self.show_shortcuts) {
             self.player.send(cmd);
         }
     }
@@ -505,6 +534,10 @@ impl eframe::App for App {
         let lyrics = self.update_lyrics(&state);
 
         egui::CentralPanel::no_frame().show(ui, |ui| self.draw_layout(ui, &state, lyrics.clone()));
+        // Clicking the overlay closes it.
+        if ui::shortcuts::draw(&ctx, self.show_shortcuts) {
+            self.show_shortcuts = false;
+        }
 
         if self.show_debug {
             self.debug_window(&ctx, &state, &lyrics);
@@ -520,7 +553,10 @@ impl eframe::App for App {
         }
 
         let fading = self.art.fade() < 1.0;
-        let overlays = self.export_panel.is_some() || progress.is_some() || !self.toasts.is_empty();
+        let overlays = self.export_panel.is_some()
+            || self.show_shortcuts
+            || progress.is_some()
+            || !self.toasts.is_empty();
         // The moving backdrop keeps flowing while paused.
         let moving = self.motion && self.layout != Layout::Spotify;
         if state.state == PlayState::Playing || fading || overlays || moving {
@@ -534,6 +570,7 @@ impl eframe::App for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::shortcuts::Input;
 
     #[test]
     fn panel_blocks_app_keys() {
@@ -557,27 +594,79 @@ mod tests {
             Key::OpenBracket,
             Key::CloseBracket,
         ] {
-            assert_eq!(key_action(key, true), None, "{key:?}");
-            assert!(key_action(key, false).is_some(), "{key:?}");
+            assert_eq!(key_action(key, true, false), None, "{key:?}");
+            assert!(key_action(key, false, false).is_some(), "{key:?}");
         }
     }
 
     #[test]
     fn escape_and_e_depend_on_panel() {
-        assert_eq!(key_action(Key::Escape, false), Some(Action::Quit));
-        assert_eq!(key_action(Key::Escape, true), Some(Action::CloseExport));
-        assert_eq!(key_action(Key::E, false), Some(Action::OpenExport));
-        assert_eq!(key_action(Key::E, true), Some(Action::CloseExport));
-        assert_eq!(key_action(Key::F11, true), Some(Action::Fullscreen));
-        assert_eq!(key_action(Key::A, false), Some(Action::ArtistBackground));
-        assert_eq!(key_action(Key::K, false), Some(Action::Tint));
-        assert_eq!(key_action(Key::S, false), Some(Action::SkipButtons));
-        assert_eq!(key_action(Key::K, true), None);
-        assert_eq!(key_action(Key::S, true), None);
-        assert_eq!(key_action(Key::J, false), Some(Action::LyricsAlign));
-        assert_eq!(key_action(Key::J, true), None);
-        assert_eq!(key_action(Key::O, false), Some(Action::LyricsFlow));
-        assert_eq!(key_action(Key::O, true), None);
-        assert_eq!(key_action(Key::Z, false), None);
+        assert_eq!(key_action(Key::Escape, false, false), Some(Action::Quit));
+        assert_eq!(
+            key_action(Key::Escape, true, false),
+            Some(Action::CloseExport)
+        );
+        assert_eq!(key_action(Key::E, false, false), Some(Action::OpenExport));
+        assert_eq!(key_action(Key::E, true, false), Some(Action::CloseExport));
+        assert_eq!(key_action(Key::F11, true, false), Some(Action::Fullscreen));
+        assert_eq!(
+            key_action(Key::A, false, false),
+            Some(Action::ArtistBackground)
+        );
+        assert_eq!(key_action(Key::K, false, false), Some(Action::Tint));
+        assert_eq!(key_action(Key::S, false, false), Some(Action::SkipButtons));
+        assert_eq!(key_action(Key::K, true, false), None);
+        assert_eq!(key_action(Key::S, true, false), None);
+        assert_eq!(key_action(Key::J, false, false), Some(Action::LyricsAlign));
+        assert_eq!(key_action(Key::J, true, false), None);
+        assert_eq!(key_action(Key::O, false, false), Some(Action::LyricsFlow));
+        assert_eq!(key_action(Key::O, true, false), None);
+        assert_eq!(key_action(Key::Z, false, false), None);
+    }
+
+    #[test]
+    fn shortcuts_overlay_keys() {
+        for key in [Key::Questionmark, Key::H] {
+            assert_eq!(key_action(key, false, false), Some(Action::Shortcuts));
+            assert_eq!(key_action(key, false, true), Some(Action::Shortcuts));
+            assert_eq!(key_action(key, true, false), None);
+        }
+        assert_eq!(
+            key_action(Key::Escape, false, true),
+            Some(Action::CloseShortcuts)
+        );
+        assert_eq!(key_action(Key::Q, false, true), Some(Action::Quit));
+        assert_eq!(
+            key_action(Key::Escape, true, true),
+            Some(Action::CloseExport)
+        );
+        assert_eq!(key_action(Key::L, false, true), Some(Action::Layout));
+    }
+
+    #[test]
+    fn shift_slash_is_a_question_mark() {
+        let shift = Modifiers::SHIFT;
+        assert_eq!(pressed_key(Key::Slash, shift), Key::Questionmark);
+        assert_eq!(pressed_key(Key::Slash, Modifiers::NONE), Key::Slash);
+        assert_eq!(pressed_key(Key::Questionmark, shift), Key::Questionmark);
+        assert_eq!(pressed_key(Key::H, shift), Key::H);
+    }
+
+    #[test]
+    fn shortcuts_overlay_lists_every_key() {
+        let listed: Vec<Key> = ui::shortcuts::SHORTCUTS
+            .iter()
+            .flat_map(|sc| sc.inputs)
+            .filter_map(|&input| match input {
+                Input::Key(key) => Some(key),
+                Input::Click => None,
+            })
+            .collect();
+        for &key in Key::ALL {
+            let mapped = [(false, false), (false, true), (true, false)]
+                .into_iter()
+                .any(|(panel, overlay)| key_action(key, panel, overlay).is_some());
+            assert_eq!(mapped, listed.contains(&key), "{key:?}");
+        }
     }
 }
