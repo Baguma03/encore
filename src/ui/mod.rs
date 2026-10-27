@@ -3,6 +3,7 @@ pub mod backdrop;
 pub mod export_panel;
 pub mod icons;
 pub mod lyrics_column;
+pub mod lyrics_panel;
 pub mod panel_theme;
 pub mod scheme;
 pub mod shortcuts;

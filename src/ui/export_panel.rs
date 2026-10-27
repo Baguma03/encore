@@ -47,7 +47,7 @@ const LIST_HEIGHT: f32 = 290.0;
 const TIME_COLUMN: f32 = 48.0;
 /// Width of the labels in front of chip rows.
 const ROW_LABEL: f32 = 64.0;
-const PILL_HEIGHT: f32 = 38.0;
+pub(super) const PILL_HEIGHT: f32 = 38.0;
 /// Radius of the range slider's handles, and how close a press must be to grab one.
 const HANDLE_RADIUS: f32 = 8.0;
 const HANDLE_REACH: f32 = 14.0;
@@ -1062,7 +1062,7 @@ pub fn fmt_size(bytes: u64) -> String {
     }
 }
 
-fn muted(t: &PanelTheme, text: &str, size: f32) -> RichText {
+pub(super) fn muted(t: &PanelTheme, text: &str, size: f32) -> RichText {
     RichText::new(text)
         .font(font_light(size))
         .color(with_alpha(t.heading, 0.55))
@@ -1073,7 +1073,12 @@ fn value(t: &PanelTheme, text: &str) -> RichText {
 }
 
 /// A section card: a softly lighter rounded box. With `bottom`, it reaches down at least that far.
-fn card<R>(ui: &mut Ui, t: &PanelTheme, bottom: Option<f32>, add: impl FnOnce(&mut Ui) -> R) -> R {
+pub(super) fn card<R>(
+    ui: &mut Ui,
+    t: &PanelTheme,
+    bottom: Option<f32>,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
     Frame::new()
         .fill(t.layer(7))
         .stroke(Stroke::new(1.0, t.layer(12)))
@@ -1091,7 +1096,7 @@ fn card<R>(ui: &mut Ui, t: &PanelTheme, bottom: Option<f32>, add: impl FnOnce(&m
 }
 
 /// Small, spaced-out uppercase heading of a card.
-fn section_heading(ui: &mut Ui, t: &PanelTheme, text: &str) {
+pub(super) fn section_heading(ui: &mut Ui, t: &PanelTheme, text: &str) {
     let job = LayoutJob::single_section(
         text.to_owned(),
         TextFormat {
@@ -1125,7 +1130,7 @@ fn cell_width(ui: &Ui) -> f32 {
 }
 
 /// Clickable rect of `size` with a pointing-hand cursor, or hover-only when disabled.
-fn hit(ui: &mut Ui, size: Vec2, enabled: bool) -> (Rect, Response) {
+pub(super) fn hit(ui: &mut Ui, size: Vec2, enabled: bool) -> (Rect, Response) {
     let sense = if enabled {
         Sense::click()
     } else {
@@ -1158,7 +1163,7 @@ fn nudge(ui: &mut Ui, t: &PanelTheme, text: &str) -> Response {
 
 /// Toggleable chip for a format or style, at least 64 points wide; dimmed and inert when not
 /// `enabled`.
-fn chip(ui: &mut Ui, t: &PanelTheme, text: &str, on: bool, enabled: bool) -> Response {
+pub(super) fn chip(ui: &mut Ui, t: &PanelTheme, text: &str, on: bool, enabled: bool) -> Response {
     let text_width = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font_bold(14.0), t.heading)
@@ -1203,7 +1208,7 @@ fn chip(ui: &mut Ui, t: &PanelTheme, text: &str, on: bool, enabled: bool) -> Res
 /// A label with an iOS-style on/off switch at the right of a cell `width` wide; the whole cell
 /// is clickable, and the caller flips the setting when it is clicked. Dimmed and inert when not
 /// `enabled`.
-fn switch_cell(
+pub(super) fn switch_cell(
     ui: &mut Ui,
     t: &PanelTheme,
     label: &str,
@@ -1239,7 +1244,13 @@ fn switch_cell(
 }
 
 /// Rounded button: `accent` is filled with the theme's accent, otherwise a translucent ghost.
-fn pill(ui: &mut Ui, t: &PanelTheme, text: &str, accent: bool, enabled: bool) -> Response {
+pub(super) fn pill(
+    ui: &mut Ui,
+    t: &PanelTheme,
+    text: &str,
+    accent: bool,
+    enabled: bool,
+) -> Response {
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font_bold(15.0), t.heading);

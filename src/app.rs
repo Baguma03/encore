@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
 
 use egui::{Event, Key, Modifiers, ViewportCommand};
@@ -9,6 +10,7 @@ use crate::config::{Config, Layout, LyricsAlign, LyricsFlow, Source};
 use crate::export::{self, Aspect, ExportJob, ExportRequest, ExportStatus, Quality, Style};
 use crate::player::{Command, PlayState, Player, PlayerState, SongInfo};
 use crate::ui::export_panel::{ExportPanel, LiveLook, Marks, PanelResult};
+use crate::ui::lyrics_panel::{self, LyricsPanel};
 use crate::ui::panel_theme::PanelTheme;
 use crate::ui::toasts::{Progress, Toast, Toasts};
 use crate::ui::{self, ArtView, View};
@@ -48,13 +50,58 @@ enum Action {
     MarkOut,
     Shortcuts,
     CloseShortcuts,
+    OpenLyricsPanel,
+    CloseLyricsPanel,
 }
 
-/// Maps a key to its action. While the export panel is open only closing it and fullscreen
-/// work, so keys meant for the panel never reach playback. While the shortcuts overlay is open
-/// Escape closes it instead of quitting.
-fn key_action(key: Key, panel_open: bool, overlay_open: bool) -> Option<Action> {
-    if panel_open {
+/// A key press: the key and whether Shift was held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Press {
+    key: Key,
+    shift: bool,
+}
+
+#[cfg(test)]
+impl Press {
+    fn key(key: Key) -> Self {
+        Self { key, shift: false }
+    }
+
+    fn shift(key: Key) -> Self {
+        Self { key, shift: true }
+    }
+}
+
+/// What is open over the layout when a key is pressed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Open {
+    export: bool,
+    lyrics: bool,
+    shortcuts: bool,
+    /// A text field has the keyboard.
+    typing: bool,
+}
+
+/// Maps a key press to its action. Shift matters only for `y`: Shift+Y opens the lyrics
+/// manager, `y` alone toggles the lyrics. While a text field has the keyboard no key acts, so
+/// typing never triggers a shortcut; Escape then only leaves the field. While the lyrics
+/// manager or the export panel is open only closing it and fullscreen work, so keys meant for
+/// the panel never reach playback. While the shortcuts overlay is open Escape closes it instead
+/// of quitting.
+fn key_action(press: Press, open: Open) -> Option<Action> {
+    let Press { key, shift } = press;
+    if open.typing {
+        return None;
+    }
+    if open.lyrics {
+        return match key {
+            Key::Escape => Some(Action::CloseLyricsPanel),
+            Key::Y if shift => Some(Action::CloseLyricsPanel),
+            Key::F11 => Some(Action::Fullscreen),
+            _ => None,
+        };
+    }
+    if open.export {
         return match key {
             Key::E | Key::Escape => Some(Action::CloseExport),
             Key::F11 => Some(Action::Fullscreen),
@@ -62,13 +109,14 @@ fn key_action(key: Key, panel_open: bool, overlay_open: bool) -> Option<Action> 
         };
     }
     Some(match key {
-        Key::Escape if overlay_open => Action::CloseShortcuts,
+        Key::Escape if open.shortcuts => Action::CloseShortcuts,
         Key::F | Key::F11 => Action::Fullscreen,
         Key::C => Action::Cursor,
         Key::D => Action::Debug,
         Key::Space => Action::TogglePause,
         Key::Escape | Key::Q => Action::Quit,
         Key::L => Action::Layout,
+        Key::Y if shift => Action::OpenLyricsPanel,
         Key::Y => Action::Lyrics,
         Key::T => Action::Clock,
         Key::B => Action::Motion,
@@ -126,6 +174,7 @@ pub struct App {
     export_queue: VecDeque<ExportRequest>,
     toasts: Toasts,
     show_shortcuts: bool,
+    lyrics_panel: Option<LyricsPanel>,
 }
 
 impl App {
@@ -181,11 +230,12 @@ impl App {
             export_queue: VecDeque::new(),
             toasts,
             show_shortcuts: false,
+            lyrics_panel: None,
         }
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context, state: &PlayerState) {
-        let keys: Vec<Key> = ctx.input(|i| {
+        let presses: Vec<Press> = ctx.input(|i| {
             i.events
                 .iter()
                 .filter_map(|e| match e {
@@ -195,14 +245,23 @@ impl App {
                         repeat: false,
                         modifiers,
                         ..
-                    } => Some(pressed_key(*key, *modifiers)),
+                    } => Some(Press {
+                        key: pressed_key(*key, *modifiers),
+                        shift: modifiers.shift,
+                    }),
                     _ => None,
                 })
                 .collect()
         });
-        for key in keys {
-            let panel_open = self.export_panel.is_some();
-            if let Some(action) = key_action(key, panel_open, self.show_shortcuts) {
+        for press in presses {
+            let lyrics = self.lyrics_panel.is_some();
+            let open = Open {
+                export: self.export_panel.is_some(),
+                lyrics,
+                shortcuts: self.show_shortcuts,
+                typing: lyrics && ctx.text_edit_focused(),
+            };
+            if let Some(action) = key_action(press, open) {
                 self.run_action(ctx, action, state);
             }
         }
@@ -258,6 +317,19 @@ impl App {
             Action::MarkIn | Action::MarkOut => {}
             Action::Shortcuts => self.show_shortcuts = !self.show_shortcuts,
             Action::CloseShortcuts => self.show_shortcuts = false,
+            Action::OpenLyricsPanel => {
+                if let Some(song) = &state.current {
+                    self.show_shortcuts = false;
+                    self.export_panel = None;
+                    let ctx = ctx.clone();
+                    self.lyrics_panel = Some(LyricsPanel::new(
+                        song.clone(),
+                        self.config.lyrics_online,
+                        Arc::new(move || ctx.request_repaint()),
+                    ));
+                }
+            }
+            Action::CloseLyricsPanel => self.lyrics_panel = None,
         }
     }
 
@@ -311,6 +383,37 @@ impl App {
             PanelResult::Open => self.export_panel = Some(panel),
             PanelResult::Close => {}
             PanelResult::Export(req) => self.export_queue.push_back(*req),
+        }
+    }
+
+    fn show_lyrics_panel(&mut self, ctx: &egui::Context, theme: &PanelTheme, state: &PlayerState) {
+        let Some(mut panel) = self.lyrics_panel.take() else {
+            return;
+        };
+        if let Some(song) = &state.current {
+            panel.follow(song);
+        }
+        let key = panel.song().lyrics_key();
+        self.lyrics.request(&key);
+        let playing = state
+            .current
+            .as_ref()
+            .is_some_and(|s| s.lyrics_key() == key);
+        // The timing view docks away from the lyrics: right when the Spotify layout's lyrics
+        // sit on the left, else left.
+        let dock_right = self.layout == Layout::Spotify && self.lyrics_align == LyricsAlign::Left;
+        let env = lyrics_panel::Env {
+            provider: &self.lyrics,
+            elapsed: playing.then(|| state.elapsed()),
+            dock_right,
+            lyrics_visible: self.lyrics_enabled,
+        };
+        let out = panel.show(ctx, theme, &env);
+        for toast in out.toasts {
+            self.toasts.push(toast);
+        }
+        if !out.close {
+            self.lyrics_panel = Some(panel);
         }
     }
 
@@ -441,9 +544,11 @@ impl App {
             Layout::Apple => ui::apple::draw(ui, &view),
             Layout::Vibrant => ui::vibrant::draw(ui, &view),
         };
-        // The export panel's backdrop and the shortcuts overlay block clicks; this guards against
-        // any that slip through.
-        if let Some(cmd) = cmd.filter(|_| self.export_panel.is_none() && !self.show_shortcuts) {
+        // The panels' backdrops and the shortcuts overlay block clicks; this guards against any
+        // that slip through.
+        let covered =
+            self.export_panel.is_some() || self.lyrics_panel.is_some() || self.show_shortcuts;
+        if let Some(cmd) = cmd.filter(|_| !covered) {
             self.player.send(cmd);
         }
     }
@@ -560,6 +665,7 @@ impl eframe::App for App {
         }
 
         self.show_export_panel(&ctx, &theme, state.elapsed());
+        self.show_lyrics_panel(&ctx, &theme, &state);
         self.poll_exports(&ctx);
         let progress = self.export_progress();
         if self.toasts.show(&ctx, progress.as_ref()) {
@@ -570,6 +676,7 @@ impl eframe::App for App {
 
         let fading = self.art.fade() < 1.0;
         let overlays = self.export_panel.is_some()
+            || self.lyrics_panel.is_some()
             || self.show_shortcuts
             || progress.is_some()
             || !self.toasts.is_empty();
@@ -587,6 +694,29 @@ impl eframe::App for App {
 mod tests {
     use super::*;
     use crate::ui::shortcuts::Input;
+
+    const NONE: Open = Open {
+        export: false,
+        lyrics: false,
+        shortcuts: false,
+        typing: false,
+    };
+    const EXPORT: Open = Open {
+        export: true,
+        ..NONE
+    };
+    const SHORTCUTS: Open = Open {
+        shortcuts: true,
+        ..NONE
+    };
+    const LYRICS: Open = Open {
+        lyrics: true,
+        ..NONE
+    };
+
+    fn act(key: Key, open: Open) -> Option<Action> {
+        key_action(Press::key(key), open)
+    }
 
     #[test]
     fn panel_blocks_app_keys() {
@@ -610,53 +740,79 @@ mod tests {
             Key::OpenBracket,
             Key::CloseBracket,
         ] {
-            assert_eq!(key_action(key, true, false), None, "{key:?}");
-            assert!(key_action(key, false, false).is_some(), "{key:?}");
+            assert_eq!(act(key, EXPORT), None, "{key:?}");
+            assert_eq!(act(key, LYRICS), None, "{key:?}");
+            assert!(act(key, NONE).is_some(), "{key:?}");
         }
     }
 
     #[test]
     fn escape_and_e_depend_on_panel() {
-        assert_eq!(key_action(Key::Escape, false, false), Some(Action::Quit));
+        assert_eq!(act(Key::Escape, NONE), Some(Action::Quit));
+        assert_eq!(act(Key::Escape, EXPORT), Some(Action::CloseExport));
+        assert_eq!(act(Key::E, NONE), Some(Action::OpenExport));
+        assert_eq!(act(Key::E, EXPORT), Some(Action::CloseExport));
+        assert_eq!(act(Key::F11, EXPORT), Some(Action::Fullscreen));
+        assert_eq!(act(Key::A, NONE), Some(Action::ArtistBackground));
+        assert_eq!(act(Key::K, NONE), Some(Action::Tint));
+        assert_eq!(act(Key::S, NONE), Some(Action::SkipButtons));
+        assert_eq!(act(Key::K, EXPORT), None);
+        assert_eq!(act(Key::S, EXPORT), None);
+        assert_eq!(act(Key::J, NONE), Some(Action::LyricsAlign));
+        assert_eq!(act(Key::J, EXPORT), None);
+        assert_eq!(act(Key::O, NONE), Some(Action::LyricsFlow));
+        assert_eq!(act(Key::O, EXPORT), None);
+        assert_eq!(act(Key::Z, NONE), None);
+    }
+
+    #[test]
+    fn shift_y_opens_the_lyrics_manager_and_y_toggles_lyrics() {
+        let shift_y = Press::shift(Key::Y);
+        assert_eq!(act(Key::Y, NONE), Some(Action::Lyrics));
+        assert_eq!(key_action(shift_y, NONE), Some(Action::OpenLyricsPanel));
         assert_eq!(
-            key_action(Key::Escape, true, false),
-            Some(Action::CloseExport)
+            key_action(shift_y, SHORTCUTS),
+            Some(Action::OpenLyricsPanel)
         );
-        assert_eq!(key_action(Key::E, false, false), Some(Action::OpenExport));
-        assert_eq!(key_action(Key::E, true, false), Some(Action::CloseExport));
-        assert_eq!(key_action(Key::F11, true, false), Some(Action::Fullscreen));
-        assert_eq!(
-            key_action(Key::A, false, false),
-            Some(Action::ArtistBackground)
-        );
-        assert_eq!(key_action(Key::K, false, false), Some(Action::Tint));
-        assert_eq!(key_action(Key::S, false, false), Some(Action::SkipButtons));
-        assert_eq!(key_action(Key::K, true, false), None);
-        assert_eq!(key_action(Key::S, true, false), None);
-        assert_eq!(key_action(Key::J, false, false), Some(Action::LyricsAlign));
-        assert_eq!(key_action(Key::J, true, false), None);
-        assert_eq!(key_action(Key::O, false, false), Some(Action::LyricsFlow));
-        assert_eq!(key_action(Key::O, true, false), None);
-        assert_eq!(key_action(Key::Z, false, false), None);
+        assert_eq!(key_action(shift_y, EXPORT), None);
+        assert_eq!(key_action(shift_y, LYRICS), Some(Action::CloseLyricsPanel));
+        assert_eq!(act(Key::Y, LYRICS), None);
+        // Shift only matters for y.
+        assert_eq!(key_action(Press::shift(Key::L), NONE), Some(Action::Layout));
+    }
+
+    #[test]
+    fn lyrics_manager_keys() {
+        assert_eq!(act(Key::Escape, LYRICS), Some(Action::CloseLyricsPanel));
+        assert_eq!(act(Key::F11, LYRICS), Some(Action::Fullscreen));
+        assert_eq!(act(Key::E, LYRICS), None);
+        assert_eq!(act(Key::Questionmark, LYRICS), None);
+        // Typing in a text field triggers nothing, not even Escape or Shift+Y.
+        let typing = Open {
+            typing: true,
+            ..LYRICS
+        };
+        for key in [Key::Escape, Key::Space, Key::Q, Key::E, Key::F11, Key::Y] {
+            assert_eq!(act(key, typing), None, "{key:?}");
+        }
+        assert_eq!(key_action(Press::shift(Key::Y), typing), None);
     }
 
     #[test]
     fn shortcuts_overlay_keys() {
         for key in [Key::Questionmark, Key::H] {
-            assert_eq!(key_action(key, false, false), Some(Action::Shortcuts));
-            assert_eq!(key_action(key, false, true), Some(Action::Shortcuts));
-            assert_eq!(key_action(key, true, false), None);
+            assert_eq!(act(key, NONE), Some(Action::Shortcuts));
+            assert_eq!(act(key, SHORTCUTS), Some(Action::Shortcuts));
+            assert_eq!(act(key, EXPORT), None);
         }
-        assert_eq!(
-            key_action(Key::Escape, false, true),
-            Some(Action::CloseShortcuts)
-        );
-        assert_eq!(key_action(Key::Q, false, true), Some(Action::Quit));
-        assert_eq!(
-            key_action(Key::Escape, true, true),
-            Some(Action::CloseExport)
-        );
-        assert_eq!(key_action(Key::L, false, true), Some(Action::Layout));
+        assert_eq!(act(Key::Escape, SHORTCUTS), Some(Action::CloseShortcuts));
+        assert_eq!(act(Key::Q, SHORTCUTS), Some(Action::Quit));
+        let both = Open {
+            export: true,
+            ..SHORTCUTS
+        };
+        assert_eq!(act(Key::Escape, both), Some(Action::CloseExport));
+        assert_eq!(act(Key::L, SHORTCUTS), Some(Action::Layout));
     }
 
     #[test]
@@ -670,19 +826,24 @@ mod tests {
 
     #[test]
     fn shortcuts_overlay_lists_every_key() {
-        let listed: Vec<Key> = ui::shortcuts::SHORTCUTS
+        let inputs: Vec<Input> = ui::shortcuts::SHORTCUTS
             .iter()
             .flat_map(|sc| sc.inputs)
-            .filter_map(|&input| match input {
-                Input::Key(key) => Some(key),
-                Input::Click => None,
-            })
+            .copied()
             .collect();
+        let states = [NONE, SHORTCUTS, EXPORT, LYRICS];
         for &key in Key::ALL {
-            let mapped = [(false, false), (false, true), (true, false)]
-                .into_iter()
-                .any(|(panel, overlay)| key_action(key, panel, overlay).is_some());
-            assert_eq!(mapped, listed.contains(&key), "{key:?}");
+            let mapped = states.iter().any(|&open| act(key, open).is_some());
+            assert_eq!(mapped, inputs.contains(&Input::Key(key)), "{key:?}");
+            // A Shift combination is listed when it does something other than the key alone.
+            let shifted = states
+                .iter()
+                .any(|&open| key_action(Press::shift(key), open) != act(key, open));
+            assert_eq!(
+                shifted,
+                inputs.contains(&Input::Shift(key)),
+                "Shift+{key:?}"
+            );
         }
     }
 }

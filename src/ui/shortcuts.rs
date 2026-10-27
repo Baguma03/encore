@@ -17,6 +17,8 @@ use super::with_alpha;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Input {
     Key(Key),
+    /// A key pressed with Shift held.
+    Shift(Key),
     /// A click away from the controls.
     Click,
 }
@@ -74,7 +76,7 @@ const fn shortcut(inputs: &'static [Input], description: &'static str, group: Gr
 }
 
 use Group::*;
-use Input::{Click, Key as K};
+use Input::{Click, Key as K, Shift};
 
 /// Every shortcut, in the order the overlay lists them within each group.
 pub const SHORTCUTS: &[Shortcut] = &[
@@ -93,6 +95,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut(&[K(Key::S)], "Skip buttons (Spotify)", Display),
     shortcut(&[K(Key::C)], "Mouse cursor", Display),
     shortcut(&[K(Key::Y)], "Lyrics on / off", Lyrics),
+    shortcut(&[Shift(Key::Y)], "Lyrics manager", Lyrics),
     shortcut(&[K(Key::J)], "Lyric alignment (Spotify)", Lyrics),
     shortcut(&[K(Key::O)], "Lyric flow (Spotify)", Lyrics),
     shortcut(&[K(Key::E)], "Clip export panel", Export),
@@ -107,10 +110,19 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut(&[K(Key::Escape), K(Key::Q)], "Quit", App),
 ];
 
+/// Text on the key caps of an input: one cap, or one per key of a combination.
+fn caps(input: Input) -> Vec<&'static str> {
+    match input {
+        Shift(key) => vec!["Shift", label(K(key))],
+        _ => vec![label(input)],
+    }
+}
+
 /// Text on an input's key cap.
 fn label(input: Input) -> &'static str {
     match input {
         Click => "Click",
+        Shift(_) => "Shift",
         K(Key::Space) => "Space",
         K(Key::Escape) => "Esc",
         K(Key::ArrowLeft) => "←",
@@ -210,7 +222,8 @@ pub fn draw(ctx: &egui::Context, open: bool, theme: &PanelTheme) -> bool {
         .inner
 }
 
-/// What sits in a row's key column: key caps with a dim separator between alternatives.
+/// What sits in a row's key column: key caps with a dim `/` between alternatives and a dim `+`
+/// between the keys of a combination.
 enum Part {
     Cap(Arc<Galley>),
     Separator(Arc<Galley>),
@@ -428,11 +441,20 @@ fn column(painter: &Painter, theme: &PanelTheme, s: f32, index: usize) -> Column
                         theme.muted,
                     )));
                 }
-                parts.push(Part::Cap(painter.layout_no_wrap(
-                    label(input).into(),
-                    cap_font(input, s),
-                    theme.text,
-                )));
+                for (j, cap) in caps(input).into_iter().enumerate() {
+                    if j > 0 {
+                        parts.push(Part::Separator(painter.layout_no_wrap(
+                            "+".into(),
+                            mono(CAP_TEXT * s),
+                            theme.muted,
+                        )));
+                    }
+                    parts.push(Part::Cap(painter.layout_no_wrap(
+                        cap.into(),
+                        cap_font(input, s),
+                        theme.text,
+                    )));
+                }
             }
             let text = painter.layout_no_wrap(
                 shortcut.description.into(),
@@ -548,11 +570,12 @@ mod tests {
 
     #[test]
     fn each_key_is_listed_once() {
-        let mut keys: Vec<Key> = SHORTCUTS
+        let mut keys: Vec<(Key, bool)> = SHORTCUTS
             .iter()
             .flat_map(|sc| sc.inputs)
             .filter_map(|&input| match input {
-                K(key) => Some(key),
+                K(key) => Some((key, false)),
+                Shift(key) => Some((key, true)),
                 Click => None,
             })
             .collect();
@@ -576,5 +599,7 @@ mod tests {
         assert_eq!(label(K(Key::Questionmark)), "?");
         assert_eq!(label(K(Key::Escape)), "Esc");
         assert_eq!(label(Click), "Click");
+        assert_eq!(caps(Shift(Key::Y)), ["Shift", "y"]);
+        assert_eq!(caps(K(Key::Y)), ["y"]);
     }
 }
