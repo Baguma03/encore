@@ -291,12 +291,12 @@ Online results are saved to the disk cache with a `[source:lrclib]` or `[source:
 Synced lyrics use the standard LRC format (`[mm:ss.xx] line`), and the `[offset:+/-ms]` and `[length:mm:ss.xx]` tags are supported. Files without timestamps (and plain-text `.txt` files) are shown as unsynced lyrics. Lyrics files can be UTF-8, UTF-16 with a byte order mark, or Latin-1.
 
 ### Lyrics manager
-`Shift`+`y` opens the lyrics manager for the current song, a panel in the same style and album colours as the export panel; `Shift`+`y` again, `Esc`, the × in its corner or **Cancel** closes it without saving. While a text field has the keyboard no shortcut works, and `Esc` first leaves the field. If the song changes while it is open, it switches to the new song and clears the search.
+`Shift`+`y` opens the lyrics manager for the current song, a panel in the same style and album colours as the export panel; `Shift`+`y` again, `Esc`, the × in its corner or **Cancel** closes it without saving. While a text field has the keyboard no shortcut works, and `Esc` first leaves the field; in the sync view `Esc` goes back to the editor instead. If the song changes while it is open, it switches to the new song and clears the search.
 
 - **Current lyrics**: the card at the top shows the lyrics on the display and where they came from, such as "Synced (Cache (LRCLIB))" or "Plain (Manual)", with the timing offset when one is set. Its buttons copy the lyrics to the clipboard, open the timing view, and, for saved manual lyrics, remove them after a confirmation, which looks the song up again.
 - **Search**: the field searches LRCLIB and KuGou for its text; left empty it searches for the song's own title and artist. The arrow beside it fills in "Artist - Title". `Enter` or **Search** starts a search. Results are ranked by how well their title and artist match (title words weigh more than the artist, and instrumental or karaoke versions rank lower), then synced before plain, then by the closest length, and identical lyrics are listed once. Each result shows its provider, whether it is synced, its title and artist, its length with the difference from the song's, and whether it is a sure, good or weak match, with its first lines. Providers that fail are noted above the results. Searching needs online lyrics (`lyrics_online`).
 - **Add LRC file**: picks a `.lrc` or `.txt` file in the system's file dialog, through the XDG Desktop Portal, with `zenity` or `kdialog` as a fallback when no portal answers. Files can also be dropped anywhere on the window while the manager is open. The file is listed as "File: <name>".
-- **Editor**: clicking the current lyrics, a result or the imported file puts its text in the editor, where it can be changed; **Reset** discards the changes. The line under it counts the lyric lines and warns when there are none.
+- **Editor**: clicking the current lyrics, a result or the imported file puts its text in the editor, where it can be changed; **Reset** discards the changes. The line under it counts the lyric lines and warns when there are none. Beside it, the playback position reads to the hundredth of a second, and **Insert time** puts it at the editor's cursor as `[mm:ss.xx]`; at the start of a line that already begins with a timestamp it replaces that timestamp, and without a cursor it goes at the start of the first lyric line without one. **Sync** opens the [sync view](#sync-view) on the editor's text.
 - **Save** stores the editor's text as the song's manual lyrics, which the display shows at once and which take precedence over every other source. They are saved as `~/.cache/encore/lyrics/manual/<artist> - <title>.lrc` when they have timestamps, else `.txt`.
 
 The timing view moves the panel to the side of the window away from the lyrics and dims the layout less, so the lyrics stay readable behind it. It shows the previous, active and next lyric lines at the playback position with their times, and changes apply to the display at once:
@@ -304,6 +304,27 @@ The timing view moves the panel to the side of the window away from the lyrics a
 - **Stretch to song length**: scales every line time by the song's length divided by the lyrics' `[length:]` tag, for sped-up or slowed versions of the recording the lyrics were timed against. It needs synced lyrics with a `[length:]` tag within a factor of four of the song's length.
 
 The offset and stretch are kept per song in `~/.cache/encore/lyrics/manual/<artist> - <title>.json`, whichever source the lyrics come from, and apply to the display and to exported clips.
+
+#### Sync view
+The sync view times the editor's lyrics line by line while the song plays. It works on synced LRC and on plain lyrics alike, docks to the side like the timing view so the lyrics stay visible behind it, and shows the playback position large, to the hundredth of a second, above a list of the lines with their times (`--:--.--` for a line without one). The line the next stamp goes to is outlined, and the line showing at the playback position has an accent bar and the accent colour. As lines get times the display behind the panel shows them as they would look once saved; nothing is saved until **Save** in the editor.
+
+| Key | Action |
+| --- | --- |
+| `Space` or `Enter` | Stamp the outlined line with the playback position and move to the next line |
+| `Backspace` | Step back to the line before and clear its time, to stamp it again |
+| `←` / `→` | Seek 3 seconds back / forward |
+| `p` | Play/pause (also the **Pause**/**Play** button) |
+| `g` | Insert an instrumental break (a blank timestamped line, shown as `• • •`) before the next line, stamped now (also the **Gap** button) |
+| `Esc` | Back to the editor without the times (also **Cancel**) |
+
+While the view is open these keys belong to it and trigger no other shortcut; `Shift`+`y` and `F11` still work. A key stamp records the position 0.12 seconds early (`REACTION` in `src/lyrics/sync_edit.rs`) to make up for the delay between hearing a line start and pressing the key; while the song is paused the position is used as it is. Stamps account for the file's `[offset:]` tag and the song's timing offset and stretch, so a line shows at the position it was stamped at.
+
+Clicking a line makes it the next line to stamp. Blank lines between stanzas are stepped over when stamping; clicking one and stamping it turns it into an instrumental break. Each line's own controls, on the outlined and the hovered line, also work without tapping along:
+- Clicking a line's time plays from 1 second before the line, to hear the lead-in.
+- **−** and **+** move that line 0.1 seconds earlier or later.
+- The stopwatch sets the line to the playback position.
+
+A time earlier than the line before it is shown in the warning colour and counted under the list; lines are never reordered. **Clear** removes every time. **Apply** writes the lines back into the editor as LRC: the `[ar:]`, `[al:]`, `[ti:]`, `[offset:]` and other tags stay, a `[length:]` tag with the song's length is added when there is none, lines without a time keep their text without a timestamp (the display leaves them out), and blank lines without a time are dropped.
 
 ## Obtaining and using artist background images from Spotify
 For Spotify's fullscreen mode, it uses a slightly darkened version of the main artist's profile banner as a background.

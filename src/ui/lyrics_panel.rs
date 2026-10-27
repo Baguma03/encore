@@ -1,33 +1,39 @@
 //! The lyrics manager: searches LRCLIB and KuGou, imports lyrics files, edits and saves a
-//! song's manual lyrics, and adjusts the timing of the lyrics it shows.
+//! song's manual lyrics, times them line by line, and adjusts the timing of the lyrics it
+//! shows.
 
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use egui::epaint::Shadow;
-use egui::text::{LayoutJob, TextFormat, TextWrapping};
+use egui::text::{CCursor, CCursorRange, LayoutJob, TextFormat, TextWrapping};
+use egui::text_edit::TextEditState;
 use egui::{
-    Align, Align2, Color32, CursorIcon, FontId, Frame, Galley, Id, Key, LayerId, Margin, Modal,
-    Order, Painter, Pos2, Rect, Response, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, Ui,
-    Vec2,
+    Align, Align2, Color32, CursorIcon, Event, FontId, Frame, Galley, Id, Key, LayerId, Margin,
+    Modal, Order, Painter, Pos2, Rect, Response, ScrollArea, Sense, Stroke, StrokeKind, TextEdit,
+    Ui, Vec2,
 };
 use encore::file_drop;
-use encore::lyrics::lrc::parse_lrc;
+use encore::lyrics::lrc::{format_timestamp, parse_lrc};
 use encore::lyrics::search::{
     Candidate, LyricsSearcher, SearchOutcome, SearchRequest, SearchState,
 };
+use encore::lyrics::sync_edit::{insert_stamp, tap_time, Clock, SyncDoc, SyncSession};
 use encore::lyrics::{
     read_lyrics_file, Adjustments, Lyrics, LyricsInfo, LyricsProvider, LyricsState, Origin, SongKey,
 };
 use encore::portal::{FilePicker, PickResult};
 
-use super::export_panel::{card, chip, hit, muted, pill, section_heading, switch_cell};
+use super::export_panel::{
+    card, chip, hit, muted, paint_nudge, pill, section_heading, switch_cell, NUDGE_SIZE,
+};
 use super::panel_theme::PanelTheme;
+use super::shortcuts::paint_key_cap;
 use super::toasts::Toast;
 use super::widgets::{ease, lerp};
 use super::{fmt_time, font_bold, font_light, with_alpha};
-use crate::player::SongInfo;
+use crate::player::{Command, SongInfo};
 
 /// File types offered by the file dialog and accepted when dropped on the window.
 const EXTENSIONS: [&str; 2] = ["lrc", "txt"];
@@ -36,6 +42,8 @@ const PATTERNS: [&str; 2] = ["*.lrc", "*.txt"];
 const PANEL_WIDTH: f32 = 1040.0;
 /// Width of the timing view, which moves to the side so the lyrics behind it stay visible.
 const TIMING_WIDTH: f32 = 500.0;
+/// Width of the sync view, which docks like the timing view.
+const SYNC_WIDTH: f32 = 600.0;
 /// Panels narrower than this stack the two columns.
 const TWO_COLUMNS: f32 = 760.0;
 /// Share of the width taken by the results column.
@@ -68,6 +76,22 @@ const OFFSET_STEPS: [(i64, &str); 4] = [
 ];
 /// Largest offset the nudges reach either way.
 const MAX_OFFSET_MS: i64 = 60_000;
+
+/// How far ← and → seek in the sync view.
+const SEEK_STEP: Duration = Duration::from_secs(3);
+/// Clicking a line's time plays from this long before the line, to hear the lead-in.
+const LEAD_IN: Duration = Duration::from_secs(1);
+/// Step of a line's ± nudges, in milliseconds.
+const LINE_NUDGE_MS: i64 = 100;
+const SYNC_ROW: f32 = 38.0;
+/// Width of a sync row's time column.
+const TIME_COLUMN: f32 = 96.0;
+/// Room above and below the sync view's list for its other parts.
+const SYNC_CHROME: f32 = 360.0;
+const MIN_SYNC_LIST: f32 = 160.0;
+const MAX_SYNC_LIST: f32 = 640.0;
+/// Shown in place of a line's time while it has none.
+const NO_TIME: &str = "--:--.--";
 
 const SAVED_TOAST: Duration = Duration::from_secs(4);
 const NOTICE_TOAST: Duration = Duration::from_secs(3);
@@ -117,8 +141,17 @@ pub struct Draft {
     /// The editor's text as selected, for telling edits apart and resetting them.
     original: String,
     timing: bool,
+    /// The sync view's pass over the editor's text, while the view is open.
+    sync: Option<SyncState>,
     confirm_delete: bool,
     error: Option<String>,
+}
+
+/// The sync view's state.
+pub struct SyncState {
+    pub session: SyncSession,
+    /// Scroll the next line to stamp into view on the next frame.
+    scroll: bool,
 }
 
 impl Draft {
@@ -134,6 +167,7 @@ impl Draft {
             editor: String::new(),
             original: String::new(),
             timing: false,
+            sync: None,
             confirm_delete: false,
             error: None,
         }
@@ -224,6 +258,7 @@ impl Draft {
         self.select(Entry::File, label, &text);
         self.file = Some(Imported { name, text });
         self.timing = false;
+        self.sync = None;
     }
 
     pub fn select_file(&mut self) {
@@ -276,6 +311,81 @@ impl Draft {
     fn is_selected(&self, entry: Entry) -> bool {
         self.selection.as_ref().is_some_and(|s| s.entry == entry)
     }
+
+    /// The editor holds lyric lines to time.
+    pub fn can_sync(&self) -> bool {
+        !parse_lrc(&self.editor).is_empty()
+    }
+
+    /// Opens the sync view on the editor's text.
+    pub fn start_sync(&mut self) {
+        if self.can_sync() {
+            self.sync = Some(SyncState {
+                session: SyncSession::new(SyncDoc::parse(&self.editor)),
+                scroll: true,
+            });
+            self.timing = false;
+            self.confirm_delete = false;
+        }
+    }
+
+    /// Closes the sync view, writing its lines back into the editor as LRC.
+    pub fn apply_sync(&mut self) {
+        if let Some(sync) = self.sync.take() {
+            self.editor = sync.session.doc.to_text(self.song.duration);
+        }
+    }
+
+    /// Closes the sync view and leaves the editor as it was.
+    pub fn cancel_sync(&mut self) {
+        self.sync = None;
+    }
+
+    pub fn is_syncing(&self) -> bool {
+        self.sync.is_some()
+    }
+}
+
+/// What a key does in the sync view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncKey {
+    Stamp,
+    Back,
+    SeekBack,
+    SeekForward,
+    TogglePause,
+    Gap,
+    Cancel,
+}
+
+/// The sync view's keys. They act without Ctrl, Alt or the command key.
+pub fn sync_key(key: Key) -> Option<SyncKey> {
+    Some(match key {
+        Key::Space | Key::Enter => SyncKey::Stamp,
+        Key::Backspace => SyncKey::Back,
+        Key::ArrowLeft => SyncKey::SeekBack,
+        Key::ArrowRight => SyncKey::SeekForward,
+        Key::P => SyncKey::TogglePause,
+        Key::G => SyncKey::Gap,
+        Key::Escape => SyncKey::Cancel,
+        _ => return None,
+    })
+}
+
+/// The position ← or → seeks to from `elapsed`, within the song.
+pub fn seek_target(elapsed: Duration, forward: bool, duration: Option<Duration>) -> Duration {
+    if forward {
+        let to = elapsed + SEEK_STEP;
+        duration.map_or(to, |d| to.min(d))
+    } else {
+        elapsed.saturating_sub(SEEK_STEP)
+    }
+}
+
+/// A playback position as a stamp would read: `mm:ss.xx`.
+pub fn fmt_position(position: Duration) -> String {
+    let cs = (position.as_millis() + 5) / 10;
+    format_timestamp(Duration::from_millis(cs as u64 * 10))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -416,6 +526,8 @@ pub struct Env<'a> {
     pub dock_right: bool,
     /// The lyrics are shown on the display.
     pub lyrics_visible: bool,
+    /// The song is playing rather than paused.
+    pub playing: bool,
 }
 
 /// What the panel asks of the app after a frame.
@@ -423,6 +535,8 @@ pub struct Env<'a> {
 pub struct Output {
     pub close: bool,
     pub toasts: Vec<Toast>,
+    /// Playback commands from the sync view.
+    pub commands: Vec<Command>,
 }
 
 /// Lyrics of the panel's song as the provider has them this frame.
@@ -441,6 +555,8 @@ pub struct LyricsPanel {
     repaint: Arc<dyn Fn() + Send + Sync>,
     /// Colours of the frame being drawn.
     theme: PanelTheme,
+    /// The sync view's stamped lines at their song positions, for the layout behind the panel.
+    preview: Option<Arc<Lyrics>>,
 }
 
 impl LyricsPanel {
@@ -455,11 +571,23 @@ impl LyricsPanel {
             online,
             repaint,
             theme: PanelTheme::PLAIN,
+            preview: None,
         }
     }
 
     pub fn song(&self) -> &SongInfo {
         &self.draft.song
+    }
+
+    /// The sync view is open; its keys belong to the panel.
+    pub fn is_syncing(&self) -> bool {
+        self.draft.is_syncing()
+    }
+
+    /// While the sync view has stamped lines: those lines as the display would show them once
+    /// saved, to show in place of the song's lyrics. Not saved anywhere.
+    pub fn preview(&self) -> Option<Arc<Lyrics>> {
+        self.preview.clone()
     }
 
     /// Follows a song change: the panel stays open for the new song with its search cleared.
@@ -483,8 +611,113 @@ impl LyricsPanel {
         };
         self.draft
             .refresh_current(shown.info.as_ref().map(|i| &*i.text));
+        self.sync_keys(ctx, env, &shown, &mut out);
         theme.scope(ctx, || self.show_modal(ctx, env, &shown, &mut out));
+        self.update_preview(&shown);
         out
+    }
+
+    /// The clock of the sync view's document for this song.
+    fn sync_clock(&self, shown: &Shown) -> Option<Clock> {
+        let sync = self.draft.sync.as_ref()?;
+        Some(
+            sync.session
+                .doc
+                .clock(shown.adjustments, self.draft.song.duration),
+        )
+    }
+
+    fn update_preview(&mut self, shown: &Shown) {
+        let lyrics = self.draft.sync.as_ref().and_then(|sync| {
+            let clock = self.sync_clock(shown)?;
+            (sync.session.doc.stamped() > 0).then(|| clock.lyrics(&sync.session.doc))
+        });
+        match lyrics {
+            Some(l) if self.preview.as_deref() != Some(&l) => self.preview = Some(Arc::new(l)),
+            Some(_) => {}
+            None => self.preview = None,
+        }
+    }
+
+    /// Takes the sync view's keys out of this frame's input, so neither egui's widgets nor the
+    /// app see them, and acts on them. Nothing has the keyboard focus in the sync view.
+    fn sync_keys(&mut self, ctx: &egui::Context, env: &Env<'_>, shown: &Shown, out: &mut Output) {
+        if !self.draft.is_syncing() {
+            return;
+        }
+        ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+        let keys: Vec<SyncKey> = ctx.input_mut(|i| {
+            let mut keys = Vec::new();
+            i.events.retain(|e| match e {
+                Event::Key {
+                    key,
+                    pressed,
+                    repeat,
+                    modifiers,
+                    ..
+                } if !(modifiers.ctrl || modifiers.alt || modifiers.command) => {
+                    let Some(action) = sync_key(*key) else {
+                        return true;
+                    };
+                    if *pressed && !*repeat {
+                        keys.push(action);
+                    }
+                    false
+                }
+                _ => true,
+            });
+            keys
+        });
+        for key in keys {
+            self.sync_action(key, env, shown, out);
+        }
+    }
+
+    fn sync_action(&mut self, key: SyncKey, env: &Env<'_>, shown: &Shown, out: &mut Output) {
+        let Some(clock) = self.sync_clock(shown) else {
+            return;
+        };
+        let duration = self.draft.song.duration;
+        let Some(sync) = self.draft.sync.as_mut() else {
+            return;
+        };
+        let tap = env
+            .elapsed
+            .map(|e| clock.file_time(tap_time(e, env.playing)));
+        match key {
+            SyncKey::Stamp => {
+                if let Some(at) = tap {
+                    sync.session.stamp(at);
+                    sync.scroll = true;
+                }
+            }
+            SyncKey::Back => {
+                sync.session.back();
+                sync.scroll = true;
+            }
+            SyncKey::Gap => {
+                if let Some(at) = tap {
+                    sync.session.gap(at);
+                    sync.scroll = true;
+                }
+            }
+            SyncKey::SeekBack | SyncKey::SeekForward => {
+                if let Some(e) = env.elapsed {
+                    let to = seek_target(e, key == SyncKey::SeekForward, duration);
+                    out.commands.push(Command::SeekTo(to));
+                }
+            }
+            SyncKey::TogglePause => {
+                if env.elapsed.is_some() {
+                    out.commands.push(Command::TogglePause);
+                }
+            }
+            SyncKey::Cancel => self.draft.cancel_sync(),
+        }
     }
 
     /// Takes a finished search, a picked file and dropped files.
@@ -540,10 +773,17 @@ impl LyricsPanel {
         let t = self.theme;
         let id = Id::unique("lyrics-panel");
         let screen = ctx.content_rect();
-        let timing = self.draft.timing;
-        let max_width = if timing { TIMING_WIDTH } else { PANEL_WIDTH };
+        let syncing = self.draft.is_syncing();
+        let docked = self.draft.timing || syncing;
+        let max_width = if syncing {
+            SYNC_WIDTH
+        } else if docked {
+            TIMING_WIDTH
+        } else {
+            PANEL_WIDTH
+        };
         let width = max_width.min(screen.width() - 80.0).max(300.0);
-        let dock = ease(ctx.animate_bool_with_time(id.with("dock"), timing, DOCK_TIME));
+        let dock = ease(ctx.animate_bool_with_time(id.with("dock"), docked, DOCK_TIME));
         let side = if env.dock_right { 1.0 } else { -1.0 };
         let shift = ((screen.width() - width - 48.0) / 2.0 - DOCK_EDGE).max(0.0) * dock * side;
         let frame = Frame::new()
@@ -565,7 +805,10 @@ impl LyricsPanel {
             .show(ctx, |ui| {
                 ui.set_width(width);
                 ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
-                if self.draft.timing {
+                if syncing {
+                    let list = (screen.height() - SYNC_CHROME).clamp(MIN_SYNC_LIST, MAX_SYNC_LIST);
+                    self.sync_view(ui, env, shown, list, out);
+                } else if self.draft.timing {
                     self.timing_view(ui, env, shown, out);
                 } else {
                     let body = (screen.height() * BODY_SHARE).clamp(MIN_BODY, MAX_BODY);
@@ -595,7 +838,7 @@ impl LyricsPanel {
             ui.add_space(CARD_GAP);
             self.results_card(ui, body * 0.45);
             ui.add_space(CARD_GAP);
-            self.editor_card(ui, None, body * 0.45);
+            self.editor_card(ui, env, shown, None, body * 0.45);
         } else {
             let results_width = ((width - COLUMN_GAP) * RESULTS_SHARE).round();
             let editor_width = width - results_width - COLUMN_GAP;
@@ -614,7 +857,7 @@ impl LyricsPanel {
                     .rect;
                 ui.vertical(|ui| {
                     ui.set_width(editor_width);
-                    self.editor_card(ui, Some(left.bottom()), body);
+                    self.editor_card(ui, env, shown, Some(left.bottom()), body);
                 });
             });
         }
@@ -994,9 +1237,18 @@ impl LyricsPanel {
         painter.galley(Pos2::new(rect.center().x, y), galley, t.heading);
     }
 
-    /// The editable text that Save writes.
-    fn editor_card(&mut self, ui: &mut Ui, bottom: Option<f32>, body: f32) {
+    /// The editable text that Save writes, with the playback position and the sync view's
+    /// button.
+    fn editor_card(
+        &mut self,
+        ui: &mut Ui,
+        env: &Env<'_>,
+        shown: &Shown,
+        bottom: Option<f32>,
+        body: f32,
+    ) {
         let t = self.theme;
+        let editor_id = Id::unique("lyrics-editor-text");
         card(ui, &t, bottom, |ui| {
             let top = ui.cursor().top();
             ui.horizontal(|ui| {
@@ -1011,10 +1263,15 @@ impl LyricsPanel {
                     if reset.clicked() {
                         self.draft.reset_editor();
                     }
+                    let sync = chip(ui, &t, "Sync", false, self.draft.can_sync())
+                        .on_hover_text("Time the lines while the song plays");
+                    if sync.clicked() {
+                        self.draft.start_sync();
+                    }
                     ui.add(egui::Label::new(muted(&t, &label, 13.0)).truncate());
                 });
             });
-            let status_height = 22.0;
+            let status_height = 30.0;
             let end = bottom.map_or(top + body, |b| b - CARD_PAD - 1.0);
             let height = (end - ui.cursor().top() - status_height - 10.0).max(120.0);
             let width = ui.available_width();
@@ -1030,7 +1287,7 @@ impl LyricsPanel {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             TextEdit::multiline(&mut self.draft.editor)
-                                .id(Id::unique("lyrics-editor-text"))
+                                .id(editor_id)
                                 .font(FontId::monospace(13.5))
                                 .text_color(t.text)
                                 .hint_text(
@@ -1061,8 +1318,36 @@ impl LyricsPanel {
                 if self.draft.edited() {
                     ui.label(muted(&t, "·  Edited", 12.5));
                 }
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    let insert = chip(ui, &t, "Insert time", false, env.elapsed.is_some())
+                        .on_hover_text("Put the playback position at the cursor as [mm:ss.xx]");
+                    if let (true, Some(elapsed)) = (insert.clicked(), env.elapsed) {
+                        self.insert_time(ui.ctx(), editor_id, shown, elapsed);
+                    }
+                    position_readout(ui, &t, env.elapsed, 14.0);
+                });
             });
         });
+    }
+
+    /// Puts the timestamp for `elapsed` into the editor at its cursor and gives the editor
+    /// the keyboard again, with the cursor after the timestamp.
+    fn insert_time(&mut self, ctx: &egui::Context, id: Id, shown: &Shown, elapsed: Duration) {
+        let state = TextEditState::load(ctx, id);
+        let cursor = state
+            .as_ref()
+            .and_then(|s| s.cursor.char_range())
+            .map(|r| r.as_sorted_char_range().start.0);
+        let clock =
+            SyncDoc::parse(&self.draft.editor).clock(shown.adjustments, self.draft.song.duration);
+        let (text, index) = insert_stamp(&self.draft.editor, cursor, clock.file_time(elapsed));
+        self.draft.editor = text;
+        let mut state = state.unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(CCursorRange::one(CCursor::new(index))));
+        state.store(ctx, id);
+        ctx.memory_mut(|m| m.request_focus(id));
     }
 
     /// Add LRC file on the left; Search, Cancel and Save on the right.
@@ -1133,6 +1418,214 @@ impl LyricsPanel {
             }
             Err(e) => self.draft.error = Some(format!("Couldn't save: {e}")),
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Sync view
+
+    fn sync_view(
+        &mut self,
+        ui: &mut Ui,
+        env: &Env<'_>,
+        shown: &Shown,
+        list_height: f32,
+        out: &mut Output,
+    ) {
+        let t = self.theme;
+        let Some(clock) = self.sync_clock(shown) else {
+            return;
+        };
+        self.header(ui, out);
+        ui.add_space(16.0);
+        self.sync_controls(ui, env, clock, out);
+        ui.add_space(CARD_GAP);
+        self.sync_list(ui, env, clock, list_height, out);
+        ui.add_space(CARD_GAP);
+        key_hints(ui, &t);
+        ui.add_space(CARD_GAP);
+        let Some(sync) = &self.draft.sync else {
+            return;
+        };
+        let doc = &sync.session.doc;
+        let early = doc.out_of_order().iter().filter(|&&e| e).count();
+        let open = doc.unstamped();
+        let note = if let Some(error) = &self.draft.error {
+            Some((error.clone(), t.warning))
+        } else if early > 0 {
+            let s = if early == 1 { " is" } else { "s are" };
+            Some((
+                format!("{early} line{s} earlier than the line before"),
+                t.warning,
+            ))
+        } else if open > 0 && doc.stamped() > 0 {
+            let s = if open == 1 { "" } else { "s" };
+            Some((
+                format!("{open} line{s} without a time stay unsynced"),
+                with_alpha(t.heading, 0.55),
+            ))
+        } else {
+            None
+        };
+        let mut apply = false;
+        let mut cancel = false;
+        ui.horizontal(|ui| {
+            ui.set_height(super::export_panel::PILL_HEIGHT);
+            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                apply = pill(ui, &t, "Apply", true, true)
+                    .on_hover_text("Write the times into the editor; Save keeps them")
+                    .clicked();
+                cancel = pill(ui, &t, "Cancel", false, true)
+                    .on_hover_text("Back to the editor without the times (Esc)")
+                    .clicked();
+                if let Some((note, color)) = note {
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(note)
+                                .font(font_light(13.5))
+                                .color(color),
+                        )
+                        .truncate(),
+                    );
+                }
+            });
+        });
+        if apply {
+            self.draft.apply_sync();
+        } else if cancel {
+            self.draft.cancel_sync();
+        }
+    }
+
+    /// The playback position, how many lines have times, and the play, gap and clear buttons.
+    fn sync_controls(&mut self, ui: &mut Ui, env: &Env<'_>, clock: Clock, out: &mut Output) {
+        let t = self.theme;
+        let Some(sync) = self.draft.sync.as_mut() else {
+            return;
+        };
+        card(ui, &t, None, |ui| {
+            ui.horizontal(|ui| {
+                section_heading(ui, &t, "SYNC");
+                let doc = &sync.session.doc;
+                let total = doc.lines.iter().filter(|l| !l.is_gap()).count();
+                let done = doc
+                    .lines
+                    .iter()
+                    .filter(|l| !l.is_gap() && l.time.is_some())
+                    .count();
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(muted(&t, &format!("{done} of {total} lines timed"), 12.5));
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                position_readout(ui, &t, env.elapsed, 34.0);
+                ui.add_space(6.0);
+                let state = match (env.elapsed, env.playing) {
+                    (None, _) => "Not playing",
+                    (Some(_), true) => "Playing",
+                    (Some(_), false) => "Paused",
+                };
+                ui.label(muted(&t, state, 14.0));
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    let playing = env.elapsed.is_some();
+                    let clear = chip(ui, &t, "Clear", false, sync.session.doc.stamped() > 0)
+                        .on_hover_text("Remove every line's time");
+                    if clear.clicked() {
+                        sync.session.doc.clear();
+                        sync.session.next = sync.session.doc.first_open();
+                        sync.scroll = true;
+                    }
+                    let gap = chip(ui, &t, "Gap", false, playing)
+                        .on_hover_text("Mark an instrumental break before the next line now (G)");
+                    if let (true, Some(e)) = (gap.clicked(), env.elapsed) {
+                        sync.session.gap(clock.file_time(e));
+                        sync.scroll = true;
+                    }
+                    let label = if env.playing { "Pause" } else { "Play" };
+                    if chip(ui, &t, label, env.playing, playing)
+                        .on_hover_text("P")
+                        .clicked()
+                    {
+                        out.commands.push(Command::TogglePause);
+                    }
+                });
+            });
+        });
+    }
+
+    /// Every line with its time; the next line to stamp is outlined and the line showing at
+    /// the playback position is in the accent colour.
+    fn sync_list(
+        &mut self,
+        ui: &mut Ui,
+        env: &Env<'_>,
+        clock: Clock,
+        height: f32,
+        out: &mut Output,
+    ) {
+        let t = self.theme;
+        let duration = self.draft.song.duration;
+        let Some(sync) = self.draft.sync.as_mut() else {
+            return;
+        };
+        let early = sync.session.doc.out_of_order();
+        let active = env.elapsed.and_then(|e| clock.active(&sync.session.doc, e));
+        card(ui, &t, None, |ui| {
+            ScrollArea::vertical()
+                .id_salt("lyrics-sync")
+                .max_height(height)
+                .min_scrolled_height(height)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let width = ui.available_width();
+                    let mut action = None;
+                    let count = sync.session.doc.lines.len();
+                    for (i, (line, &early)) in sync.session.doc.lines.iter().zip(&early).enumerate()
+                    {
+                        let row = SyncRow {
+                            index: i,
+                            time: line.time,
+                            text: &line.text,
+                            next: sync.session.next == Some(i),
+                            active: active == Some(i),
+                            early,
+                        };
+                        let (rect, row_action) =
+                            sync_row(ui, &t, &row, width, env.elapsed.is_some());
+                        let last = i + 1 == count && sync.session.next.is_none();
+                        if sync.scroll && (row.next || last) {
+                            ui.scroll_to_rect(rect, Some(Align::Center));
+                        }
+                        if row_action.is_some() {
+                            action = row_action.map(|a| (i, a));
+                        }
+                    }
+                    sync.scroll = false;
+                    let Some((i, action)) = action else {
+                        return;
+                    };
+                    match action {
+                        RowAction::Select => sync.session.select(i),
+                        RowAction::Seek => {
+                            if let Some(time) = sync.session.doc.lines[i].time {
+                                let at = clock.song_time(time).saturating_sub(LEAD_IN);
+                                out.commands.push(Command::SeekTo(match duration {
+                                    Some(d) => at.min(d),
+                                    None => at,
+                                }));
+                            }
+                        }
+                        RowAction::Nudge(ms) => sync.session.doc.nudge(i, ms),
+                        RowAction::StampNow => {
+                            if let Some(e) = env.elapsed {
+                                sync.session.doc.set(i, Some(clock.file_time(e)));
+                            }
+                        }
+                    }
+                });
+        });
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1337,6 +1830,256 @@ fn live_lines(ui: &mut Ui, t: &PanelTheme, state: &LyricsState, elapsed: Option<
             galley,
             color,
         );
+    }
+}
+
+/// The playback position as `mm:ss.xx` in monospace, or blanks when the song isn't playing.
+fn position_readout(ui: &mut Ui, t: &PanelTheme, elapsed: Option<Duration>, size: f32) {
+    let (text, color) = match elapsed {
+        Some(e) => (fmt_position(e), t.heading),
+        None => (NO_TIME.to_owned(), with_alpha(t.heading, 0.35)),
+    };
+    ui.label(
+        egui::RichText::new(text)
+            .font(FontId::monospace(size))
+            .color(color),
+    );
+}
+
+/// What a sync row shows.
+struct SyncRow<'a> {
+    index: usize,
+    time: Option<Duration>,
+    text: &'a str,
+    /// The next line to stamp.
+    next: bool,
+    /// Showing at the playback position.
+    active: bool,
+    /// Earlier than the line before.
+    early: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowAction {
+    Select,
+    /// Play from just before the line.
+    Seek,
+    Nudge(i64),
+    StampNow,
+}
+
+/// One line of the sync list: its time, which seeks there; its text, which selects it as the
+/// next line to stamp; and, on the hovered and the next line, ± nudges and a stamp button.
+/// `live` is whether the song is playing in the panel, which seeking and stamping need.
+fn sync_row(
+    ui: &mut Ui,
+    t: &PanelTheme,
+    row: &SyncRow<'_>,
+    width: f32,
+    live: bool,
+) -> (Rect, Option<RowAction>) {
+    let (rect, response) = hit(ui, Vec2::new(width, SYNC_ROW), true);
+    let response = response.on_hover_text("Stamp this line next");
+    let painter = ui.painter().clone();
+    let hovered = ui.rect_contains_pointer(rect);
+    let mut action = response.clicked().then_some(RowAction::Select);
+
+    if row.next {
+        painter.rect(
+            rect,
+            10,
+            t.wash(22),
+            Stroke::new(1.5, with_alpha(t.accent, 0.9)),
+            StrokeKind::Inside,
+        );
+    } else if hovered {
+        painter.rect_filled(rect, 10, t.layer(10));
+    }
+    if row.active {
+        let bar = Rect::from_center_size(
+            Pos2::new(rect.left() + 5.0, rect.center().y),
+            Vec2::new(3.0, SYNC_ROW - 16.0),
+        );
+        painter.rect_filled(bar, 1.5, t.accent);
+    }
+
+    // Time: seeks to just before the line.
+    let time_rect = Rect::from_min_size(
+        Pos2::new(rect.left() + 12.0, rect.top() + 5.0),
+        Vec2::new(TIME_COLUMN - 12.0, SYNC_ROW - 10.0),
+    );
+    let seekable = live && row.time.is_some();
+    let time_sense = if seekable {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let mut time_resp = ui.interact(
+        time_rect,
+        Id::unique(("lyrics-sync-time", row.index)),
+        time_sense,
+    );
+    if seekable {
+        time_resp = time_resp
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Play from 1 s before this line");
+        if time_resp.hovered() {
+            painter.rect_filled(time_rect, 8, t.layer(18));
+        }
+        if time_resp.clicked() {
+            action = Some(RowAction::Seek);
+        }
+    }
+    if row.early {
+        time_resp.on_hover_text("Earlier than the line before");
+    }
+    let time_color = if row.early {
+        t.warning
+    } else if row.active {
+        t.accent
+    } else if row.time.is_some() {
+        t.text
+    } else {
+        with_alpha(t.heading, 0.35)
+    };
+    let time_text = row.time.map_or_else(|| NO_TIME.to_owned(), fmt_position);
+    painter.text(
+        time_rect.center(),
+        Align2::CENTER_CENTER,
+        time_text,
+        FontId::monospace(14.0),
+        time_color,
+    );
+
+    // Buttons from the right: stamp now, +, −.
+    let controls = hovered || row.next;
+    let mut right = rect.right() - 8.0;
+    if controls {
+        let mut button = |id: &str, enabled: bool| {
+            let r = Rect::from_min_size(
+                Pos2::new(right - NUDGE_SIZE, rect.center().y - NUDGE_SIZE / 2.0),
+                Vec2::splat(NUDGE_SIZE),
+            );
+            right -= NUDGE_SIZE + 4.0;
+            let sense = if enabled {
+                Sense::click()
+            } else {
+                Sense::hover()
+            };
+            let mut resp = ui.interact(r, Id::unique((id, row.index)), sense);
+            if enabled {
+                resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+            }
+            (r, resp)
+        };
+        let (r, stamp) = button("sync-stamp", live);
+        let stamp = stamp.on_hover_text("Set to the playback position");
+        let mut p = painter.clone();
+        if !live {
+            p.multiply_opacity(0.35);
+        }
+        p.rect_filled(r, 8, t.wash(if live && stamp.hovered() { 36 } else { 20 }));
+        paint_glyph(
+            &p,
+            Glyph::Timer,
+            Rect::from_center_size(r.center(), Vec2::splat(17.0)),
+            t.heading,
+        );
+        if stamp.clicked() {
+            action = Some(RowAction::StampNow);
+        }
+        let timed = row.time.is_some();
+        for (text, ms) in [("+", LINE_NUDGE_MS), ("−", -LINE_NUDGE_MS)] {
+            let (r, resp) = button(if ms > 0 { "sync-later" } else { "sync-earlier" }, timed);
+            let resp = resp.on_hover_text(if ms > 0 {
+                "0.1 s later"
+            } else {
+                "0.1 s earlier"
+            });
+            let mut p = painter.clone();
+            if !timed {
+                p.multiply_opacity(0.35);
+            }
+            paint_nudge(&p, t, r, text, timed && resp.hovered());
+            if resp.clicked() {
+                action = Some(RowAction::Nudge(ms));
+            }
+        }
+        right -= 6.0;
+    }
+
+    // Text.
+    let gap = row.text.trim().is_empty();
+    let text = if gap { "• • •" } else { row.text };
+    let (font, color) = if row.active {
+        (font_bold(15.5), t.accent)
+    } else if gap {
+        (font_bold(14.0), with_alpha(t.heading, 0.45))
+    } else if row.time.is_some() || row.next {
+        (font_light(15.0), t.heading)
+    } else {
+        (font_light(15.0), with_alpha(t.heading, 0.6))
+    };
+    let left = rect.left() + TIME_COLUMN + 10.0;
+    let galley = one_line(&painter, text, font, color, right - left);
+    painter.galley(
+        Pos2::new(left, rect.center().y - galley.size().y / 2.0),
+        galley,
+        color,
+    );
+    (rect, action)
+}
+
+/// The sync view's keys as outlined key caps with what they do.
+fn key_hints(ui: &mut Ui, t: &PanelTheme) {
+    const HINTS: [(&[&str], &str); 6] = [
+        (&["Space"], "stamp"),
+        (&["Bksp"], "back"),
+        (&["←", "→"], "3 s"),
+        (&["P"], "play/pause"),
+        (&["G"], "gap"),
+        (&["Esc"], "cancel"),
+    ];
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::hover());
+    let painter = ui.painter();
+    // Laid out once to centre the row.
+    let measure = |painter: &Painter| {
+        let mut x = 0.0;
+        for (i, (caps, label)) in HINTS.iter().enumerate() {
+            if i > 0 {
+                x += 18.0;
+            }
+            for cap in caps.iter() {
+                x += paint_key_cap(painter, t, cap, Pos2::new(-10_000.0, -10_000.0), 1.0) + 4.0;
+            }
+            x += 2.0
+                + painter
+                    .layout_no_wrap((*label).to_owned(), font_light(13.0), t.body)
+                    .size()
+                    .x;
+        }
+        x
+    };
+    let total = measure(painter);
+    let mut x = rect.center().x - total / 2.0;
+    let mid = rect.center().y;
+    for (i, (caps, label)) in HINTS.iter().enumerate() {
+        if i > 0 {
+            x += 18.0;
+        }
+        for cap in caps.iter() {
+            x += paint_key_cap(painter, t, cap, Pos2::new(x, mid), 1.0) + 4.0;
+        }
+        x += 2.0;
+        let galley = painter.layout_no_wrap((*label).to_owned(), font_light(13.0), t.body);
+        let w = galley.size().x;
+        painter.galley(
+            Pos2::new(x, mid - galley.size().y / 2.0 + 1.0),
+            galley,
+            t.body,
+        );
+        x += w;
     }
 }
 
@@ -1916,6 +2659,60 @@ mod tests {
     }
 
     #[test]
+    fn sync_view_applies_or_leaves_the_editor() {
+        let mut d = Draft::new(song("A"));
+        d.import("a.txt".into(), "One\nTwo".into());
+        assert!(d.can_sync());
+        d.timing = true;
+        d.start_sync();
+        assert!(d.is_syncing() && !d.timing);
+        let sync = d.sync.as_mut().unwrap();
+        sync.session.stamp(Duration::from_millis(1500));
+        // Cancel leaves the editor as it was.
+        d.cancel_sync();
+        assert!(!d.is_syncing());
+        assert_eq!(d.editor, "One\nTwo");
+        d.start_sync();
+        let sync = d.sync.as_mut().unwrap();
+        sync.session.stamp(Duration::from_millis(1500));
+        sync.session.stamp(Duration::from_millis(3000));
+        d.apply_sync();
+        assert!(!d.is_syncing());
+        assert_eq!(
+            d.editor,
+            "[length:03:23.00]\n[00:01.50]One\n[00:03.00]Two\n"
+        );
+        assert!(d.can_save());
+        // Nothing to time in an empty editor; a new song closes the view.
+        d.editor.clear();
+        assert!(!d.can_sync());
+        d.start_sync();
+        assert!(!d.is_syncing());
+        d.editor = "x".into();
+        d.start_sync();
+        assert!(d.follow(&song("B")));
+        assert!(!d.is_syncing());
+    }
+
+    #[test]
+    fn sync_keys_and_seeks() {
+        assert_eq!(sync_key(Key::Space), Some(SyncKey::Stamp));
+        assert_eq!(sync_key(Key::Enter), Some(SyncKey::Stamp));
+        assert_eq!(sync_key(Key::Backspace), Some(SyncKey::Back));
+        assert_eq!(sync_key(Key::P), Some(SyncKey::TogglePause));
+        assert_eq!(sync_key(Key::G), Some(SyncKey::Gap));
+        assert_eq!(sync_key(Key::Escape), Some(SyncKey::Cancel));
+        assert_eq!(sync_key(Key::Y), None);
+        let s = Duration::from_secs;
+        assert_eq!(seek_target(s(10), false, None), s(7));
+        assert_eq!(seek_target(s(1), false, None), s(0));
+        assert_eq!(seek_target(s(10), true, Some(s(200))), s(13));
+        assert_eq!(seek_target(s(199), true, Some(s(200))), s(200));
+        assert_eq!(fmt_position(Duration::from_millis(62_345)), "01:02.35");
+        assert_eq!(fmt_position(Duration::from_millis(62_344)), "01:02.34");
+    }
+
+    #[test]
     fn stretch_needs_a_length_tag() {
         let info = |synced, length: Option<u64>, can_stretch| LyricsInfo {
             origin: Origin::Manual,
@@ -2000,7 +2797,9 @@ mod snapshot {
     /// Renders the lyrics manager over the Apple layout to the PNG named by
     /// `ENCORE_LYRICS_PANEL_SNAPSHOT`, or `lyrics-panel.png` in the temp folder.
     /// `ENCORE_LYRICS_PANEL_STATE` picks what it shows: `results` (default), `searching`,
-    /// `empty`, `offline`, `failed`, `file`, `timing`, `drop`, or `live` for a real search.
+    /// `empty`, `offline`, `failed`, `file`, `timing`, `drop`, `live` for a real search, or the
+    /// sync view: `sync` (plain lyrics, nothing stamped), `sync-half` (half the lines stamped)
+    /// or `sync-warn` (a line earlier than the one before).
     /// `ENCORE_LYRICS_PANEL_SONG=<file>` loads the art of that MPD file, and
     /// `ENCORE_LYRICS_PANEL_TITLE` / `_ARTIST` / `_SECS` describe the song.
     #[test]
@@ -2085,6 +2884,27 @@ mod snapshot {
                     .unwrap();
                 d.timing = true;
             }
+            "sync" | "sync-half" | "sync-warn" => {
+                let plain: Vec<&str> = LRC
+                    .lines()
+                    .filter_map(|l| l.split_once(']').map(|(_, t)| t))
+                    .filter(|t| !t.is_empty() && (!t.contains(':') || t.contains(' ')))
+                    .collect();
+                let mut text = plain[..5].join("\n");
+                text.push_str("\n\n");
+                text.push_str(&plain[5..].join("\n"));
+                d.import("Rich Spirit.txt".into(), text);
+                d.start_sync();
+                if state != "sync" {
+                    let session = &mut d.sync.as_mut().unwrap().session;
+                    for ms in [6490, 8680, 11_270, 13_650, 17_600, 21_100] {
+                        session.stamp(Duration::from_millis(ms));
+                    }
+                    if state == "sync-warn" {
+                        session.doc.set(2, Some(Duration::from_millis(5000)));
+                    }
+                }
+            }
             "live" => {
                 let agent = sources::new_agent();
                 d.outcome = Some(Arc::new(search::search(&agent, &d.request())));
@@ -2164,7 +2984,9 @@ mod snapshot {
                         artist_bg: false,
                         show_clock: false,
                         lyrics_enabled: true,
-                        lyrics: provider.get(&key),
+                        lyrics: panel
+                            .preview()
+                            .map_or_else(|| provider.get(&key), LyricsState::Found),
                         now: chrono::Local::now(),
                         capture: false,
                         motion: false,
@@ -2183,6 +3005,7 @@ mod snapshot {
                             elapsed: Some(elapsed),
                             dock_right: false,
                             lyrics_visible: true,
+                            playing: true,
                         },
                     );
                     for toast in out.toasts {

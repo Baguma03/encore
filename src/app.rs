@@ -77,6 +77,8 @@ struct Open {
     export: bool,
     lyrics: bool,
     shortcuts: bool,
+    /// The lyrics manager's sync view is open; it takes its own keys, Escape included.
+    syncing: bool,
     /// A text field has the keyboard.
     typing: bool,
 }
@@ -85,7 +87,8 @@ struct Open {
 /// manager, `y` alone toggles the lyrics. While a text field has the keyboard no key acts, so
 /// typing never triggers a shortcut; Escape then only leaves the field. While the lyrics
 /// manager or the export panel is open only closing it and fullscreen work, so keys meant for
-/// the panel never reach playback. While the shortcuts overlay is open Escape closes it instead
+/// the panel never reach playback; in the lyrics manager's sync view Escape is left to the view,
+/// which goes back to the editor. While the shortcuts overlay is open Escape closes it instead
 /// of quitting.
 fn key_action(press: Press, open: Open) -> Option<Action> {
     let Press { key, shift } = press;
@@ -94,7 +97,7 @@ fn key_action(press: Press, open: Open) -> Option<Action> {
     }
     if open.lyrics {
         return match key {
-            Key::Escape => Some(Action::CloseLyricsPanel),
+            Key::Escape if !open.syncing => Some(Action::CloseLyricsPanel),
             Key::Y if shift => Some(Action::CloseLyricsPanel),
             Key::F11 => Some(Action::Fullscreen),
             _ => None,
@@ -255,6 +258,10 @@ impl App {
                 export: self.export_panel.is_some(),
                 lyrics,
                 shortcuts: self.show_shortcuts,
+                syncing: self
+                    .lyrics_panel
+                    .as_ref()
+                    .is_some_and(LyricsPanel::is_syncing),
                 typing: lyrics && ctx.text_edit_focused(),
             };
             if let Some(action) = key_action(press, open) {
@@ -403,10 +410,14 @@ impl App {
             elapsed: playing.then(|| state.elapsed()),
             dock_right,
             lyrics_visible: self.lyrics_enabled,
+            playing: state.state == PlayState::Playing,
         };
         let out = panel.show(ctx, theme, &env);
         for toast in out.toasts {
             self.toasts.push(toast);
+        }
+        for cmd in out.commands {
+            self.player.send(cmd);
         }
         if !out.close {
             self.lyrics_panel = Some(panel);
@@ -488,7 +499,8 @@ impl App {
         })
     }
 
-    /// Queues lookups for the current and next song and returns the current song's lyrics.
+    /// Queues lookups for the current and next song and returns the current song's lyrics,
+    /// or the lyrics manager's preview of them while its sync view has stamped lines.
     fn update_lyrics(&self, state: &PlayerState) -> LyricsState {
         let Some(song) = state.current.as_ref().filter(|_| self.lyrics_enabled) else {
             return LyricsState::NotFound;
@@ -498,7 +510,15 @@ impl App {
         if let Some(next) = &state.next {
             self.lyrics.prefetch(&next.lyrics_key());
         }
-        self.lyrics.get(&key)
+        let preview = self
+            .lyrics_panel
+            .as_ref()
+            .filter(|p| p.song().lyrics_key() == key)
+            .and_then(LyricsPanel::preview);
+        match preview {
+            Some(lyrics) => LyricsState::Found(lyrics),
+            None => self.lyrics.get(&key),
+        }
     }
 
     fn art_view(&self) -> ArtView<'_> {
@@ -695,6 +715,7 @@ mod tests {
         export: false,
         lyrics: false,
         shortcuts: false,
+        syncing: false,
         typing: false,
     };
     const EXPORT: Open = Open {
@@ -792,6 +813,34 @@ mod tests {
             assert_eq!(act(key, typing), None, "{key:?}");
         }
         assert_eq!(key_action(Press::shift(Key::Y), typing), None);
+    }
+
+    #[test]
+    fn sync_view_keeps_its_keys() {
+        let syncing = Open {
+            syncing: true,
+            ..LYRICS
+        };
+        // The view's own keys, Escape included, reach no app action.
+        for key in [
+            Key::Space,
+            Key::Enter,
+            Key::Backspace,
+            Key::ArrowLeft,
+            Key::ArrowRight,
+            Key::P,
+            Key::G,
+            Key::Escape,
+        ] {
+            assert_eq!(act(key, syncing), None, "{key:?}");
+            assert!(lyrics_panel::sync_key(key).is_some(), "{key:?}");
+        }
+        assert_eq!(act(Key::F11, syncing), Some(Action::Fullscreen));
+        assert_eq!(
+            key_action(Press::shift(Key::Y), syncing),
+            Some(Action::CloseLyricsPanel)
+        );
+        assert_eq!(lyrics_panel::sync_key(Key::Q), None);
     }
 
     #[test]

@@ -6,8 +6,8 @@ use std::time::Duration;
 use egui::epaint::{CornerRadius, Shadow};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{
-    Align, Align2, Color32, CursorIcon, Frame, Id, Margin, Modal, Pos2, Rect, Response, RichText,
-    ScrollArea, Sense, Stroke, Ui, Vec2,
+    Align, Align2, Color32, CursorIcon, Frame, Id, Margin, Modal, Painter, Pos2, Rect, Response,
+    RichText, ScrollArea, Sense, Stroke, Ui, Vec2,
 };
 use encore::lyrics::{LyricLine, Lyrics, LyricsState};
 
@@ -1145,11 +1145,25 @@ pub(super) fn hit(ui: &mut Ui, size: Vec2, enabled: bool) -> (Rect, Response) {
     (rect, response)
 }
 
+/// Side of a [`nudge`] button.
+pub(super) const NUDGE_SIZE: f32 = 26.0;
+
 /// Small square ± button.
 fn nudge(ui: &mut Ui, t: &PanelTheme, text: &str) -> Response {
-    let (rect, response) = hit(ui, Vec2::splat(26.0), true);
-    let fill = if response.hovered() { 36 } else { 20 };
-    let painter = ui.painter();
+    let (rect, response) = hit(ui, Vec2::splat(NUDGE_SIZE), true);
+    paint_nudge(ui.painter(), t, rect, text, response.hovered());
+    response
+}
+
+/// Paints a ± button over `rect`.
+pub(super) fn paint_nudge(
+    painter: &Painter,
+    t: &PanelTheme,
+    rect: Rect,
+    text: &str,
+    hovered: bool,
+) {
+    let fill = if hovered { 36 } else { 20 };
     painter.rect_filled(rect, 8, t.wash(fill));
     painter.text(
         rect.center(),
@@ -1158,7 +1172,6 @@ fn nudge(ui: &mut Ui, t: &PanelTheme, text: &str) -> Response {
         font_bold(16.0),
         t.heading,
     );
-    response
 }
 
 /// Toggleable chip for a format or style, at least 64 points wide; dimmed and inert when not

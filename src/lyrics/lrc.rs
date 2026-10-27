@@ -168,7 +168,7 @@ fn trim_blank_edges(mut lines: Vec<String>) -> Vec<String> {
 }
 
 /// `mm:ss`, `mm:ss.f{1,3}` or `mm:ss:ff` in milliseconds.
-fn parse_timestamp(tag: &str) -> Option<u64> {
+pub(crate) fn parse_timestamp(tag: &str) -> Option<u64> {
     let (min, rest) = tag.trim().split_once(':')?;
     let (sec, frac) = match rest.find(['.', ':']) {
         Some(i) => (&rest[..i], Some(&rest[i + 1..])),
@@ -192,7 +192,7 @@ fn parse_timestamp(tag: &str) -> Option<u64> {
 }
 
 /// `[key:value]` with an alphabetic key, e.g. `[ar:...]`, `[offset:+100]`.
-fn is_metadata(tag: &str) -> bool {
+pub(crate) fn is_metadata(tag: &str) -> bool {
     tag.split_once(':').is_some_and(|(key, _)| {
         let key = key.trim();
         !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphabetic() || b == b'#')
@@ -200,7 +200,7 @@ fn is_metadata(tag: &str) -> bool {
 }
 
 /// Strips enhanced word tags (`<mm:ss.xx>`) and collapses whitespace.
-fn clean_text(text: &str) -> String {
+pub(crate) fn clean_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find('<') {

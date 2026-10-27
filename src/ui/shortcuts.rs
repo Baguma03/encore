@@ -406,6 +406,43 @@ impl Card {
     }
 }
 
+/// Paints an outlined key cap reading `text` at scale `s`, its left edge on `left_center`,
+/// as the overlay draws them; returns its width.
+pub(super) fn paint_key_cap(
+    painter: &Painter,
+    theme: &PanelTheme,
+    text: &str,
+    left_center: Pos2,
+    s: f32,
+) -> f32 {
+    // Arrows come from the proportional fallbacks, as in `cap_font`.
+    let font = if text.chars().all(|c| ('\u{2190}'..='\u{21ff}').contains(&c)) {
+        font_light(CAP_TEXT * s)
+    } else {
+        mono(CAP_TEXT * s)
+    };
+    let galley = painter.layout_no_wrap(text.to_owned(), font, theme.text);
+    let cap = Part::Cap(galley.clone());
+    let slot = Rect::from_min_size(
+        left_center - Vec2::new(0.0, CAP * s / 2.0),
+        Vec2::new(cap.width(s), CAP * s),
+    );
+    painter.rect_stroke(
+        slot,
+        CAP_CORNER * s,
+        Stroke::new(s.max(1.0), theme.outline),
+        StrokeKind::Inside,
+    );
+    painter.galley(
+        Align2::CENTER_CENTER
+            .anchor_size(slot.center(), galley.size())
+            .min,
+        galley,
+        theme.text,
+    );
+    slot.width()
+}
+
 fn pill_width(title: &Galley, s: f32) -> f32 {
     2.0 * (PILL_INSET + PILL_PAD) * s + ICON * s + ICON_GAP * s + title.size().x
 }

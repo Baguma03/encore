@@ -77,6 +77,13 @@ impl Timing {
         Duration::from_millis(ms.max(0.0).round() as u64)
     }
 
+    /// Lyric time shown at song position `song`: the inverse of [`Timing::song_time`].
+    /// Positions before the offset map to zero.
+    pub fn lyric_time(&self, song: Duration) -> Duration {
+        let ms = (song.as_secs_f64() * 1000.0 - self.offset_ms as f64) / self.scale;
+        Duration::from_millis(ms.max(0.0).round() as u64)
+    }
+
     /// The lyrics with every line moved to its song position. Plain lyrics are unchanged.
     pub fn apply(&self, lyrics: &Lyrics) -> Lyrics {
         match lyrics {
@@ -152,6 +159,22 @@ mod tests {
         assert!(Timing::new(off, Some(ms(200_000)), Some(ms(220_000))).is_identity());
         // Absurd factors are ignored.
         assert_eq!(stretch_factor(Some(ms(10_000)), Some(ms(200_000))), None);
+    }
+
+    #[test]
+    fn lyric_time_inverts_song_time() {
+        let t = Timing::new(
+            Adjustments {
+                offset_ms: 250,
+                stretch: true,
+            },
+            Some(ms(100_000)),
+            Some(ms(50_000)),
+        );
+        assert_eq!(t.lyric_time(ms(5250)), ms(10_000));
+        assert_eq!(t.lyric_time(t.song_time(ms(42_120))), ms(42_120));
+        assert_eq!(t.lyric_time(ms(100)), ms(0));
+        assert_eq!(Timing::IDENTITY.lyric_time(ms(1234)), ms(1234));
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub mod lrc;
 pub mod manual;
 pub mod search;
 pub mod sources;
+pub mod sync_edit;
 pub mod timing;
 
 use std::collections::{HashMap, VecDeque};
