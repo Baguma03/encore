@@ -38,7 +38,7 @@ Every layout takes its colours from the album art. The cover's average colour is
 - **Spotify**: the title, active lyric line, clock and the next song's title use the pastel, the date uses the scheme's muted text colour, and the other lyric lines are fainter versions of it; the artist uses the scheme's muted text colour; the progress bar uses the primary colour for the elapsed part and handle and the secondary container colour for the rest of the track; and the play/pause button is filled with the primary colour while playing and the secondary container colour while paused.
 - **Apple**: the title, active lyric line, filled part of the progress bar and all buttons use the pastel; "Artist — Album", the other lyric lines and the times use a slightly deeper shade of it, at their usual opacity. The Up next card takes the title's, subtitle's and progress bar's colours.
 - **Vibrant**: as in the Apple layout, but the pastel is mixed towards white until the text keeps at least 80% of white text's contrast against the bright backdrop (70% for the fainter lines).
-- **Panels**: the [keyboard shortcuts overlay](#keyboard-shortcuts-overlay) and the [clip export panel](#the-panel) share one palette. The card is a dark surface with a faint hint of the cover's hue, and the dimmed backdrop behind it takes the same hint; titles use the pastel, and descriptions, key caps, outlines and hints are quieter shades of it. The overlay's section headings, selected chips, switches that are on, the Export button, the range slider's fill and handles, and the highlighted lyric lines use the primary colour, with dark text on filled controls. Tooltips and scroll bars inside the export panel follow the same palette.
+- **Panels**: the [keyboard shortcuts overlay](#keyboard-shortcuts-overlay), the [clip export panel](#the-panel) and the [lyrics manager](#lyrics-manager) share one palette. The card is a dark surface with a faint hint of the cover's hue, and the dimmed backdrop behind it takes the same hint; titles use the pastel, and descriptions, key caps, outlines and hints are quieter shades of it. The overlay's section headings, selected chips, switches that are on, the Export button, the range slider's fill and handles, and the highlighted lyric lines use the primary colour, with dark text on filled controls. Tooltips and scroll bars inside the export panel follow the same palette.
 
 Every colour keeps a minimum contrast against its backdrop, so light, dark and very saturated covers stay readable, and the colours cross-fade along with the art when the song changes. `k` turns album colours off: the Apple and Vibrant layouts are then plain white, the Spotify layout uses a neutral grey scheme with white text, and the panels are neutral grey with white text and white buttons. `ENCORE_TINT=off` starts with them off.
 
@@ -46,7 +46,7 @@ Every colour keeps a minimum contrast against its backdrop, so light, dark and v
 - Toggleable fullscreen with the `f` or `F11` key
 - Fully reactive window, all screen elements will be properly scaled/positioned
 - Artist-specific background art (See more [here](#obtaining-and-using-artist-background-images-from-spotify))
-- Time-synced lyrics from local files, a cache, or [LRCLIB](#lyrics)
+- Time-synced lyrics from local files, a cache, [LRCLIB](#lyrics) or KuGou, with a [lyrics manager](#lyrics-manager) for picking, editing and re-timing them
 - Click or press space to play/pause; `←` / `→` for previous/next track
 - Easy to quit with `Esc` or `q`
 - Works with MPD or any MPRIS player (see [Players](#players))
@@ -65,6 +65,7 @@ Every colour keeps a minimum contrast against its backdrop, so light, dark and v
 | `←` / `→` | Previous / next track |
 | `l` | Cycle layouts (Apple → Vibrant → Spotify) |
 | `y` | Toggle lyrics |
+| `Shift`+`y` | Open/close the [lyrics manager](#lyrics-manager) |
 | `t` | Toggle date/clock overlay |
 | `b` | Toggle the moving backdrop |
 | `a` | Toggle the artist background for the current layout |
@@ -78,7 +79,7 @@ Every colour keeps a minimum contrast against its backdrop, so light, dark and v
 | `Esc` / `q` | Quit (`Esc` closes the shortcuts overlay first when it is open; `q` always quits) |
 
 ### Keyboard shortcuts overlay
-`?` or `h` opens a "Keyboard shortcuts" cheatsheet over a dimmed backdrop: a dark card with the keys grouped into Playback, Lyrics, Display, Export and App across three columns, each key drawn as an outlined monospace key cap beside its description, with alternative keys separated by a `/`. Press `?` or `h` again, press `Esc`, click the × in the card's corner, or click outside the card to close it; the click does not toggle play/pause. Other keys keep working while it is open. While the export panel is open, `?` and `h` do nothing.
+`?` or `h` opens a "Keyboard shortcuts" cheatsheet over a dimmed backdrop: a dark card with the keys grouped into Playback, Lyrics, Display, Export and App across three columns, each key drawn as an outlined monospace key cap beside its description, with alternative keys separated by a `/` and the keys of a combination joined by a `+`. Press `?` or `h` again, press `Esc`, click the × in the card's corner, or click outside the card to close it; the click does not toggle play/pause. Other keys keep working while it is open. While the export panel or the lyrics manager is open, `?` and `h` do nothing.
 
 On every launch a "Press ? for shortcuts" toast shows for 4.5 seconds. `ENCORE_HINT=off` (or `0`) or `hint = false` in the configuration file turns it off.
 
@@ -153,7 +154,7 @@ Startup settings live in `~/.config/encore/config.toml` (`$XDG_CONFIG_HOME/encor
 ```toml
 layout = "spotify"          # apple | vibrant | spotify
 lyrics = true
-lyrics_online = true        # LRCLIB lookups
+lyrics_online = true        # LRCLIB and KuGou lookups
 lyrics_align = "right-left" # left | center | right | right-left
 lyrics_flow = "scrolling"   # classic | stacked | scrolling
 motion = true
@@ -191,7 +192,7 @@ Environment variables override the [configuration file](#configuration-file). Th
 | `ENCORE_SKIP_BUTTONS` | `on` or `off`: previous/next buttons beside the Spotify layout's progress bar. Defaults to `on`. |
 | `ENCORE_LYRICS_ALIGN` | `left`, `center`, `right` or `right-left` (the right-hand column with left-aligned lines): alignment of the Spotify layout's lyrics. Defaults to `right`. |
 | `ENCORE_LYRICS_FLOW` | `classic`, `stacked` or `scrolling`: how the Spotify layout's synced lyrics move. Defaults to `stacked`. |
-| `ENCORE_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable LRCLIB lookups. Enabled by default. |
+| `ENCORE_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable online lookups (LRCLIB and KuGou) and the lyrics manager's search. Enabled by default. |
 | `ENCORE_SOURCE` | `auto`, `mpd` or `mpris` (case-insensitive): [where playback is read from](#players). Defaults to `auto`. |
 | `ENCORE_MPRIS_PLAYER` | Case-insensitive part of an MPRIS player's name (for example `spotify`, `firefox`, `vlc` or `mpv`) to follow. Defaults to any player. |
 | `ENCORE_HINT` | Set to `0`, `off`, `false` or `no` to hide the "Press ? for shortcuts" toast at startup. Enabled by default. |
@@ -283,14 +284,30 @@ The debug window (`d`) has a "Player" section showing "Following: MPD" or "Follo
 
 ## Lyrics
 Lyrics are looked up in this order, and the first hit wins:
-1. **Sidecar file**: `<song>.lrc`, or `.txt` for unsynced lyrics, next to the audio file. For MPD this requires `MPD_MUSIC_DIR`; for an MPRIS player it applies to local `file://` tracks, and streamed tracks skip this step.
-2. **Local folder**: `./lyrics/<artist> - <title>.lrc` (or `.txt`). The primary artist and a bare `<title>` are also tried, and names are matched case-insensitively.
-3. **Disk cache**: `~/.cache/encore/lyrics/`
-4. **[LRCLIB](https://lrclib.net)**: free, no API key needed.
+1. **Manual lyrics**: lyrics saved in the [lyrics manager](#lyrics-manager).
+2. **Sidecar file**: `<song>.lrc`, or `.txt` for unsynced lyrics, next to the audio file. For MPD this requires `MPD_MUSIC_DIR`; for an MPRIS player it applies to local `file://` tracks, and streamed tracks skip this step.
+3. **Local folder**: `./lyrics/<artist> - <title>.lrc` (or `.txt`). The primary artist and a bare `<title>` are also tried, and names are matched case-insensitively.
+4. **Disk cache**: `~/.cache/encore/lyrics/`
+5. **Online**: [LRCLIB](https://lrclib.net) (free, no API key needed), then KuGou. LRCLIB's exact match for the artist and title comes first, then the best synced match from LRCLIB's search, then the best synced match from KuGou's two top results. A synced match must name the same title and artist and be within 5 seconds of the song's length. Plain lyrics from LRCLIB are the last resort, and a song LRCLIB marks as instrumental gets no lyrics.
 
-Results from LRCLIB are saved to the disk cache, so lyrics keep working offline afterwards. The next queued song is fetched ahead of time, and songs with no lyrics found are remembered for 7 days before being looked up again.
+Online results are saved to the disk cache with a `[source:lrclib]` or `[source:kugou]` line naming the provider, so lyrics keep working offline afterwards. A song nothing is found for gets a `.notfound` marker in the cache and is not looked up online again for 7 days. When a lookup fails on a network error, the current song shows as loading and is retried after 2, 6 and 20 seconds, then no sooner than a minute later. Two lookups run at once: the most recently requested song goes first, and the next queued song is fetched ahead of time after the requested ones.
 
-Synced lyrics use the standard LRC format (`[mm:ss.xx] line`), and the `[offset:+/-ms]` tag is supported. Files without timestamps (and plain-text `.txt` files) are shown as unsynced lyrics.
+Synced lyrics use the standard LRC format (`[mm:ss.xx] line`), and the `[offset:+/-ms]` and `[length:mm:ss.xx]` tags are supported. Files without timestamps (and plain-text `.txt` files) are shown as unsynced lyrics. Lyrics files can be UTF-8, UTF-16 with a byte order mark, or Latin-1.
+
+### Lyrics manager
+`Shift`+`y` opens the lyrics manager for the current song, a panel in the same style and album colours as the export panel; `Shift`+`y` again, `Esc`, the × in its corner or **Cancel** closes it without saving. While a text field has the keyboard no shortcut works, and `Esc` first leaves the field. If the song changes while it is open, it switches to the new song and clears the search.
+
+- **Current lyrics**: the card at the top shows the lyrics on the display and where they came from, such as "Synced (Cache (LRCLIB))" or "Plain (Manual)", with the timing offset when one is set. Its buttons copy the lyrics to the clipboard, open the timing view, and, for saved manual lyrics, remove them after a confirmation, which looks the song up again.
+- **Search**: the field searches LRCLIB and KuGou for its text; left empty it searches for the song's own title and artist. The arrow beside it fills in "Artist - Title". `Enter` or **Search** starts a search. Results are ranked by how well their title and artist match (title words weigh more than the artist, and instrumental or karaoke versions rank lower), then synced before plain, then by the closest length, and identical lyrics are listed once. Each result shows its provider, whether it is synced, its title and artist, its length with the difference from the song's, and whether it is a sure, good or weak match, with its first lines. Providers that fail are noted above the results. Searching needs online lyrics (`lyrics_online`).
+- **Add LRC file**: picks a `.lrc` or `.txt` file in the system's file dialog, through the XDG Desktop Portal, with `zenity` or `kdialog` as a fallback when no portal answers. Files can also be dropped anywhere on the window while the manager is open. The file is listed as "File: <name>".
+- **Editor**: clicking the current lyrics, a result or the imported file puts its text in the editor, where it can be changed; **Reset** discards the changes. The line under it counts the lyric lines and warns when there are none.
+- **Save** stores the editor's text as the song's manual lyrics, which the display shows at once and which take precedence over every other source. They are saved as `~/.cache/encore/lyrics/manual/<artist> - <title>.lrc` when they have timestamps, else `.txt`.
+
+The timing view moves the panel to the side of the window away from the lyrics and dims the layout less, so the lyrics stay readable behind it. It shows the previous, active and next lyric lines at the playback position with their times, and changes apply to the display at once:
+- **Offset**: −0.5 s, −0.1 s, +0.1 s and +0.5 s nudges, up to a minute either way, with **Reset**. Positive values show every line later, negative earlier; the offset adds to the file's own `[offset:]` tag.
+- **Stretch to song length**: scales every line time by the song's length divided by the lyrics' `[length:]` tag, for sped-up or slowed versions of the recording the lyrics were timed against. It needs synced lyrics with a `[length:]` tag within a factor of four of the song's length.
+
+The offset and stretch are kept per song in `~/.cache/encore/lyrics/manual/<artist> - <title>.json`, whichever source the lyrics come from, and apply to the display and to exported clips.
 
 ## Obtaining and using artist background images from Spotify
 For Spotify's fullscreen mode, it uses a slightly darkened version of the main artist's profile banner as a background.
