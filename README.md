@@ -1,6 +1,6 @@
-# Encore: A Spotify/Apple Music-like graphical display for MPD
+# Encore: A Spotify/Apple Music-like graphical display for MPD and MPRIS players
 
-Note that this is not a full MPD client, as it only *displays* data (plus basic playback controls).
+Encore displays whatever is playing on an [MPD](https://www.musicpd.org) server or on any MPRIS player (Spotify, Firefox, VLC, mpv, Rhythmbox...). Note that this is not a full player or MPD client, as it only *displays* data (plus basic playback controls).
 
 This is a replacement for my old [mpd-display](https://github.com/allylikesu/mpd-display), which was coded in Python using the Pygame engine. It was coded in one night, and I am not very proud of it.
 
@@ -11,10 +11,11 @@ This is a replacement for my old [mpd-display](https://github.com/allylikesu/mpd
 - Smooth updating progress bar
 - Doesn't spam mpc commands every frame (Uses the [mpd](https://crates.io/crates/mpd) crate for updating status, gets album art on song change using `mpc readpicture`)
 - Reconnects automatically if MPD goes away or restarts
+- Follows MPD or any MPRIS player, [switching between them](#players) as they come and go
 - Time-synced lyrics
 - Many more. The amount of sins that were committed in that old version still keep me up at night.
 
-Only tested on Linux. Requires MPC (used to fetch album art). `ffmpeg` (with libx264 and aac) is optional and only needed for [exporting lyric clips](#exporting-lyric-clips).
+Only tested on Linux. Needs either an MPD server (and `mpc`, used to fetch its album art) or any MPRIS-capable player; see [Prerequisites](#prerequisites). `ffmpeg` (with libx264 and aac) is optional and only needed for [exporting lyric clips](#exporting-lyric-clips).
 
 ## Layouts
 Three layouts are available. `l` cycles through them at runtime (Apple → Vibrant → Spotify), and `ENCORE_LAYOUT` chooses the starting one.
@@ -46,6 +47,8 @@ Every colour keeps a minimum contrast against its backdrop, so light, dark and v
 - Time-synced lyrics from local files, a cache, or [LRCLIB](#lyrics)
 - Click or press space to play/pause; `←` / `→` for previous/next track
 - Easy to quit with `Esc` or `q`
+- Works with MPD or any MPRIS player (see [Players](#players))
+- Keyboard shortcuts overlay on `?` or `h` (see [below](#keyboard-shortcuts-overlay))
 - Toggle cursor visibility with `c`
 - Toggle a useless debug window with `d`
 - Export lyric clips as share-ready MP4s (see [below](#exporting-lyric-clips))
@@ -69,7 +72,13 @@ Every colour keeps a minimum contrast against its backdrop, so light, dark and v
 | `o` | Cycle the Spotify layout's lyric flow (classic → stacked → scrolling) |
 | `e` | Open/close the lyric clip export panel |
 | `[` / `]` | Mark the clip in-point / out-point at the current playback position |
-| `Esc` / `q` | Quit |
+| `?` / `h` | Show/hide the keyboard shortcuts overlay |
+| `Esc` / `q` | Quit (`Esc` closes the shortcuts overlay first when it is open; `q` always quits) |
+
+### Keyboard shortcuts overlay
+`?` or `h` opens an overlay titled "Keyboard shortcuts", with the keys grouped into Playback, Display, Lyrics, Export and App in two columns. Press `?` or `h` again, press `Esc`, or click anywhere to close it; the click does not toggle play/pause. Other keys keep working while it is open. While the export panel is open, `?` and `h` do nothing.
+
+On every launch a "Press ? for shortcuts" toast shows for 4.5 seconds. `ENCORE_HINT=off` (or `0`) or `hint = false` in the configuration file turns it off.
 
 ## Screenshots
 ![image](img/1.png)
@@ -86,6 +95,33 @@ Every colour keeps a minimum contrast against its backdrop, so light, dark and v
 
 ![image](img/7.png)
 
+## Prerequisites
+- Rust and `cargo`, to build.
+- A playback source: either an MPD server (with `mpc`, which fetches MPD album art), or any MPRIS-capable player. See [Players](#players).
+- For MPRIS, a D-Bus session bus, which desktop sessions provide.
+- Optionally `ffmpeg`, for [exporting lyric clips](#exporting-lyric-clips).
+
+### Setting up MPD
+Skip this if you only use MPRIS players.
+
+| Distribution | Install |
+| --- | --- |
+| Arch | `sudo pacman -S mpd mpc` |
+| Debian/Ubuntu | `sudo apt install mpd mpc` |
+| Fedora | `sudo dnf install mpd mpc` |
+| openSUSE | `sudo zypper install mpd mpclient` |
+
+Set `music_directory` and at least one `audio_output` in `~/.config/mpd/mpd.conf`:
+```
+music_directory "~/Music"
+
+audio_output {
+    type "pipewire"
+    name "PipeWire"
+}
+```
+Then run `systemctl --user enable --now mpd` and queue music with a client such as `mpc` or `ncmpcpp`.
+
 ## Installation/Usage
 I'm too lazy to figure out how to make a proper cargo package.
 
@@ -98,6 +134,16 @@ target/release/encore
 ```
 
 `cargo install --path .` installs the `encore` binary instead. The window's class (app id) is `encore`, for use in compositor window rules.
+
+### Desktop entry
+To start Encore from the GNOME or KDE launcher, install the desktop entry and icon:
+```
+install -Dm644 encore.desktop ~/.local/share/applications/encore.desktop
+install -Dm644 assets/logo.png ~/.local/share/pixmaps/encore.png
+```
+The entry runs `encore`, so `~/.cargo/bin` must be on `PATH` (as it is after `cargo install --path .` with a standard Rust setup). The icon is not square, so it goes in `pixmaps`, which accepts any size, rather than in a `hicolor` size directory.
+
+Encore starts fullscreen: `Esc` or `q` quits and `f` toggles fullscreen.
 
 ### Configuration file
 Startup settings live in `~/.config/encore/config.toml` (`$XDG_CONFIG_HOME/encore/config.toml` when `XDG_CONFIG_HOME` is set). On first launch Encore writes a starter file there with every setting commented out at its default; an existing file is never overwritten. Every key is optional:
@@ -114,6 +160,9 @@ tint = true
 skip_buttons = true
 clock = true                # date and clock overlay at startup
 export_dir = "~/Videos/encore"
+source = "auto"             # auto | mpd | mpris
+mpris_player = "spotify"    # substring of the player's bus name; unset: any player
+hint = true                 # "Press ? for shortcuts" toast at startup
 
 [mpd]
 host = "localhost"          # "password@host" for a server with a password
@@ -128,7 +177,7 @@ Environment variables override the [configuration file](#configuration-file). Th
 
 | Variable | Description |
 | --- | --- |
-| `MPD_HOST` | MPD server host. Defaults to `localhost`. If your server has a password, format it as `pass@ip`. |
+| `MPD_HOST` | MPD server host (unused when `ENCORE_SOURCE=mpris`). Defaults to `localhost`. If your server has a password, format it as `pass@ip`. |
 | `MPD_PORT` | MPD server port. Defaults to `6600`. |
 | `MPD_MUSIC_DIR` | Your MPD music directory. Enables sidecar lyrics files next to the audio files and audio in exported clips. If unset, `music_directory` is read from `$XDG_CONFIG_HOME/mpd/mpd.conf` (`~/.config/mpd/mpd.conf` when unset), `~/.mpdconf`, or `/etc/mpd.conf`, whichever exists first. |
 | `ENCORE_EXPORT_DIR` | Output folder for exported clips. Defaults to `~/Videos/encore`. |
@@ -141,6 +190,9 @@ Environment variables override the [configuration file](#configuration-file). Th
 | `ENCORE_LYRICS_ALIGN` | `left`, `center`, `right` or `right-left` (the right-hand column with left-aligned lines): alignment of the Spotify layout's lyrics. Defaults to `right`. |
 | `ENCORE_LYRICS_FLOW` | `classic`, `stacked` or `scrolling`: how the Spotify layout's synced lyrics move. Defaults to `stacked`. |
 | `ENCORE_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable LRCLIB lookups. Enabled by default. |
+| `ENCORE_SOURCE` | `auto`, `mpd` or `mpris` (case-insensitive): [where playback is read from](#players). Defaults to `auto`. |
+| `ENCORE_MPRIS_PLAYER` | Case-insensitive part of an MPRIS player's name (for example `spotify`, `firefox`, `vlc` or `mpv`) to follow. Defaults to any player. |
+| `ENCORE_HINT` | Set to `0`, `off`, `false` or `no` to hide the "Press ? for shortcuts" toast at startup. Enabled by default. |
 | `ENCORE_CLOCK` | `on` or `off`: the date and clock overlay at startup (`t` toggles it). Defaults to `on`. |
 
 ## Exporting lyric clips
@@ -188,14 +240,48 @@ The **Quality** chips, **High** and **Small**, pick the encoder settings; the pa
 Both presets use x264's `medium` preset with `-tune film` and auto-variance adaptive quantisation (`aq-mode=3`), which keeps dark, soft gradients from flattening into bands. Frames are converted to limited-range BT.709 YUV 4:2:0 with full chroma interpolation and tagged as BT.709, so colours match the display in players and browsers. Exported frames also carry a faint static grain (at most 2 of 255 levels, added over the blurred-art and gradient backdrops only, never over text, art or artist photos) that keeps the encoder from banding them; the live display has none.
 
 ### Audio
-Audio is cut from the song's file in the MPD music directory, with short fades, and can be toggled with the **Audio** switch. The music directory comes from `MPD_MUSIC_DIR`, else `music_directory` in `$XDG_CONFIG_HOME/mpd/mpd.conf` (`~/.config/mpd/mpd.conf` when unset), `~/.mpdconf`, or `/etc/mpd.conf`. If the file cannot be found, the clip is exported without audio and the toast says so.
+Audio is cut from the song's file (for MPD, in the MPD music directory; for an MPRIS player, the local file its track points to), with short fades, and can be toggled with the **Audio** switch. The music directory comes from `MPD_MUSIC_DIR`, else `music_directory` in `$XDG_CONFIG_HOME/mpd/mpd.conf` (`~/.config/mpd/mpd.conf` when unset), `~/.mpdconf`, or `/etc/mpd.conf`. If the file cannot be found, the clip is exported without audio and the toast says so. MPRIS tracks that are not local `file://` files (streams, for example) are exported without audio: "no audio: the player's track is not a local file".
 
 ### Output
 Files are written to `~/Videos/encore/` (override with `ENCORE_EXPORT_DIR`) and named `<Artist> - <Title> (1m05-1m35) 9x16.mp4`, with ` (2)`, ` (3)`, ... appended if the name is taken. Exports run one at a time. A toast in the bottom-right corner shows progress, its × cancels the export, and clicking the "Saved" toast opens the folder.
 
+## Players
+Encore reads playback from MPD, from MPRIS players, or from both.
+
+### Source
+`source` in the [configuration file](#configuration-file) (or `ENCORE_SOURCE`) chooses where playback comes from. The value is case-insensitive; an unknown value logs a warning and uses `auto`.
+
+| Value | Behaviour |
+| --- | --- |
+| `auto` (default) | Follows MPD whenever it is reachable, otherwise an MPRIS player. While MPD is down it retries every 5 seconds and switches back once MPD connects. |
+| `mpd` | MPD only. Retries every 2 seconds and shows "Connecting to MPD…" until it connects. |
+| `mpris` | MPRIS players only. MPD is never contacted. |
+
+With no connection in `auto` or `mpris`, the screen shows "Waiting for a player…".
+
+### Choosing an MPRIS player
+`mpris_player` (or `ENCORE_MPRIS_PLAYER`) is a case-insensitive substring of the player's bus name after `org.mpris.MediaPlayer2.`, such as `spotify`, `firefox`, `vlc` or `mpv`. Unset, any player matches. It only affects `auto` and `mpris`.
+
+When several players match, Encore picks:
+1. the current player, while it is playing;
+2. otherwise a player that is playing;
+3. otherwise the last followed player, if it is still present;
+4. otherwise the first one alphabetically.
+
+`playerctld` is skipped. An MPD MPRIS bridge such as mpd-mpris or mpDris2 counts as a normal MPRIS player.
+
+### Album art
+MPRIS tracks use the player's `mpris:artUrl`: `file://` paths are read from disk, `http(s)` URLs are downloaded (10 second timeout, 20 MB cap) and `data:` URIs are decoded. Without usable art, the backup art is shown. MPD tracks use `mpc readpicture`, falling back to `mpc albumart`.
+
+### Limitations
+- MPRIS provides no next-track information, so there is no "Up next" card for MPRIS players.
+- Exported clips only have audio for local `file://` tracks.
+
+The debug window (`d`) has a "Player" section showing "Following: MPD" or "Following: MPRIS: <name>", the source setting, the player pin, and the MPD host and port unless the source is `mpris`.
+
 ## Lyrics
 Lyrics are looked up in this order, and the first hit wins:
-1. **Sidecar file** (requires `MPD_MUSIC_DIR`): `<music dir>/<song>.lrc`, or `.txt` for unsynced lyrics, next to the audio file.
+1. **Sidecar file**: `<song>.lrc`, or `.txt` for unsynced lyrics, next to the audio file. For MPD this requires `MPD_MUSIC_DIR`; for an MPRIS player it applies to local `file://` tracks, and streamed tracks skip this step.
 2. **Local folder**: `./lyrics/<artist> - <title>.lrc` (or `.txt`). The primary artist and a bare `<title>` are also tried, and names are matched case-insensitively.
 3. **Disk cache**: `~/.cache/encore/lyrics/`
 4. **[LRCLIB](https://lrclib.net)**: free, no API key needed.

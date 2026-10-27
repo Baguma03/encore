@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Encore
+GenericName=Now Playing Display
+Comment=Fullscreen now-playing display for MPD and MPRIS players
+Exec=encore
+Icon=encore
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupWMClass=encore
+Keywords=music;player;lyrics;mpd;mpris;now playing;
