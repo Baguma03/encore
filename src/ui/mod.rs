@@ -4,6 +4,7 @@ pub mod export_panel;
 pub mod icons;
 pub mod lyrics_column;
 pub mod scheme;
+pub mod shortcuts;
 pub mod spotify;
 pub mod toasts;
 pub mod vibrant;
