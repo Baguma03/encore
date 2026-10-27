@@ -11,6 +11,7 @@ use egui::{Align2, Color32, FontId, Galley, Id, Painter, Pos2, Rect, Sense, Vec2
 use super::backdrop;
 use super::lyrics_column::{self, LyricsColumn};
 use super::scheme::Ink;
+use super::up_next::{self, UpNext};
 use super::widgets::{
     self, ease, icon_button, lerp, paint_icon_button, paint_seek_bar, seek_bar, Icon,
 };
@@ -234,10 +235,13 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         return background_click();
     };
 
+    // Stacked arrangements move down below the Up next card while it shows.
+    let up_next = UpNext::new(ui, screen, view);
+    let clear = up_next.clear_below(screen.top(), unit * 0.04);
     let place = match Orientation::of(screen.size()) {
         Orientation::Landscape => landscape(&painter, screen, song, clock_t, lyrics_t, &ink),
-        Orientation::Portrait => portrait(&painter, screen, song, clock_t, lyrics_t, &ink),
-        Orientation::Square => square(&painter, screen, song, clock_t, lyrics_t, &ink),
+        Orientation::Portrait => portrait(&painter, screen, song, clock_t, clear, lyrics_t, &ink),
+        Orientation::Square => square(&painter, screen, song, clock_t, clear, lyrics_t, &ink),
     };
 
     paint_backdrop(
@@ -257,6 +261,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         }
         let column = LyricsColumn {
             rect: place.lyrics,
+            clear_top: up_next.clear_below(place.lyrics.top(), screen.height() * 0.04),
             base: place.lyrics_base,
             anchor: place.lyrics_anchor,
             alpha: lyrics_t,
@@ -266,6 +271,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         };
         lyrics_column::paint(ui, id.with(&song.file), &column, view);
     }
+    up_next.paint(&painter, view, &up_next::Colors::from_ink(&ink, MUTED, 0.0));
     paint_art(&painter, place.art, view, ART_RADIUS);
     place
         .meta
@@ -325,19 +331,20 @@ fn landscape(
 }
 
 /// Art centred near the top with the title under it, lyrics below and small controls at the
-/// bottom. Without lyrics the art and title sit centred.
+/// bottom. Without lyrics the art and title sit centred. Nothing goes above `clear`.
 fn portrait(
     painter: &Painter,
     screen: Rect,
     song: &SongInfo,
     clock_t: f32,
+    clear: f32,
     lyrics_t: f32,
     ink: &Ink,
 ) -> Placement {
     let (w, h) = (screen.width(), screen.height());
     let u = w.min(h);
     let pad = w * 0.08;
-    let top = screen.top() + lerp(h * 0.07, u * 0.24, clock_t);
+    let top = (screen.top() + lerp(h * 0.07, u * 0.24, clock_t)).max(clear);
 
     let control_unit = u * 0.5;
     let controls_top = screen.bottom() - h * 0.045 - Controls::height(painter, control_unit);
@@ -377,19 +384,20 @@ fn portrait(
 }
 
 /// Art at the top left with the title beside it, lyrics below and compact controls at the
-/// bottom. Without lyrics the art and title sit centred vertically.
+/// bottom. Without lyrics the art and title sit centred vertically. Nothing goes above `clear`.
 fn square(
     painter: &Painter,
     screen: Rect,
     song: &SongInfo,
     clock_t: f32,
+    clear: f32,
     lyrics_t: f32,
     ink: &Ink,
 ) -> Placement {
     let (w, h) = (screen.width(), screen.height());
     let u = w.min(h);
     let pad = w * 0.08;
-    let top = screen.top() + lerp(u * 0.07, u * 0.23, clock_t);
+    let top = (screen.top() + lerp(u * 0.07, u * 0.23, clock_t)).max(clear);
 
     let control_unit = u * 0.4;
     let controls_top = screen.bottom() - u * 0.04 - Controls::height(painter, control_unit);

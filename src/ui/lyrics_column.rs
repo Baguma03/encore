@@ -73,6 +73,9 @@ pub fn scroll_target(tops: &[f32], active: Option<usize>, intro_height: f32) -> 
 
 pub struct LyricsColumn {
     pub rect: Rect,
+    /// Lines fade out above this height rather than above the top of `rect`, but never down
+    /// to the active line; keeps them clear of the Up next card.
+    pub clear_top: f32,
     /// Font size of the active line.
     pub base: f32,
     /// Height of the active line, as a fraction from the top of `rect`.
@@ -90,6 +93,7 @@ pub struct LyricsColumn {
 pub fn paint(ui: &egui::Ui, id: Id, column: &LyricsColumn, view: &View) {
     let LyricsColumn {
         rect,
+        clear_top,
         base,
         alpha,
         anchor: anchor_frac,
@@ -117,8 +121,9 @@ pub fn paint(ui: &egui::Ui, id: Id, column: &LyricsColumn, view: &View) {
         LyricsState::NotFound => return,
     };
     let fade_band = rect.height() * 0.16;
+    let fade_top = clear_top.min(anchor - fade_band).max(rect.top());
     let fade =
-        |top: f32, height: f32| edge_fade(top + height / 2.0, rect.top(), rect.bottom(), fade_band);
+        |top: f32, height: f32| edge_fade(top + height / 2.0, fade_top, rect.bottom(), fade_band);
 
     match lyrics.as_ref() {
         Lyrics::Synced(lines) => {

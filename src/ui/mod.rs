@@ -7,6 +7,7 @@ pub mod scheme;
 pub mod shortcuts;
 pub mod spotify;
 pub mod toasts;
+pub mod up_next;
 pub mod vibrant;
 pub mod wavy;
 pub mod widgets;

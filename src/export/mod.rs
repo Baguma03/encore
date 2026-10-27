@@ -126,7 +126,7 @@ impl Style {
 #[derive(Clone, Debug)]
 pub struct ExportRequest {
     pub song: SongInfo,
-    /// Song queued after `song`, for the Spotify style's Up next card.
+    /// Song queued after `song`, for the Up next card.
     pub next: Option<SongInfo>,
     pub lyrics: LyricsState,
     /// Clip range as song positions.

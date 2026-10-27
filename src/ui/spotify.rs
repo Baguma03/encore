@@ -5,25 +5,25 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use egui::epaint::RectShape;
-use egui::text::{LayoutJob, TextWrapping};
+use egui::text::LayoutJob;
 use egui::{
     Align, Align2, Color32, CursorIcon, FontId, Galley, Id, Painter, Pos2, Rect, Sense, Vec2,
 };
 use encore::lyrics::{Lyrics, LyricsState};
 
-use super::apple::{self, square_uv};
+use super::apple;
 use super::backdrop;
 use super::icons::{paint_icon, Icon};
 use super::lyrics_column::{self, INACTIVE_SCALE, LINE_EMPHASIS, SCROLL_RATE};
 use super::scheme::{mix, Scheme};
+use super::up_next::{self, UpNext};
 use super::vibrant;
 use super::wavy::{self, BarColors, Wavy};
 use super::widgets::{ease, lerp, paint_smeared_galley, seek_input, smooth_value};
 use super::{cover_rect, fit_text, font_bold, font_light, with_alpha, View, FULL_UV};
 use crate::art::ArtTextures;
 use crate::config::{LyricsAlign, LyricsFlow};
-use crate::player::{Command, PlayState, SongInfo};
+use crate::player::{Command, PlayState};
 
 const BACKGROUND_IMAGE_TINT: Color32 = Color32::from_rgb(75, 75, 75);
 const BACKGROUND: Color32 = Color32::from_rgb(50, 50, 50);
@@ -48,17 +48,12 @@ const AFTER_NEXT_ALPHA: f32 = 0.04;
 /// Size of the lines around the active one relative to it, as in the Apple layout.
 const SIDE_SCALE: f32 = 0.9;
 
-/// Song progress from which the Up next card shows.
-const UP_NEXT_AT: f32 = 0.9;
 /// Height of the active lyric line's top above the album art, relative to the art's height.
 const ACTIVE_LINE_RISE: f32 = 0.6;
 /// Space between the lyrics and the title, relative to the gap between the art and the title.
 const LYRICS_BOTTOM_GAP: f32 = 1.5;
 /// Corner radius of the album art relative to its size.
 const ART_RADIUS: f32 = 0.035;
-
-/// Seconds for the Up next card to slide in or out.
-const UP_NEXT_SLIDE: f32 = 0.5;
 
 /// Seconds for the seek bar's wave to flatten when paused or rise again.
 const WAVE_FADE: f32 = 0.35;
@@ -235,9 +230,16 @@ fn paint(
     }
 
     // Up next card in the top-right corner.
-    let corner = Pos2::new(screen.right() - w / 30.0, origin.y + h / 20.0);
-    let card = UpNextCard::new(screen);
-    let card_t = paint_up_next(ui, painter, &card, corner, view, &scheme);
+    let up_next = UpNext::new(ui, screen, view);
+    let colors = up_next::Colors {
+        title: scheme.text,
+        artist: scheme.subtext,
+        track: with_alpha(scheme.text, 0.2),
+        // A light shade of the art's primary colour.
+        fill: mix(scheme.primary, scheme.text, 0.5),
+        halo: 0.0,
+    };
+    up_next.paint(painter, view, &colors);
 
     // Lyrics in a column as wide as the Vibrant layout's, placed by the view's alignment between
     // the title's left edge and the play button's right edge. The active line's top stays at
@@ -245,19 +247,19 @@ fn paint(
     // above the title. While the Up next card shows, the area's top moves below it when the
     // column reaches under the card, never past the active line.
     let x_range = lyrics_x_range(block, w, view.lyrics_align);
-    let under_corner = x_range.max > corner.x - card.width - w * 0.02;
+    let under_card = x_range.max > up_next.rect().left() - w * 0.02;
     let top = origin.y + h * 0.06;
     let bottom = block.title.y - LYRICS_BOTTOM_GAP * (block.title.x - art_rect.right());
-    let card_t = if under_corner { card_t } else { 0.0 };
     if bottom > top && x_range.span() > 0.0 {
         // The Vibrant layout's lyric size at the same window size.
         let base = (h / 22.0).min(x_range.span() / 14.0);
         let slot = (art_rect.top() - ACTIVE_LINE_RISE * art_rect.height()).clamp(top, bottom);
-        let card_bottom = corner.y + card.height() + h * 0.04;
-        let area = Rect::from_x_y_ranges(
-            x_range,
-            lerp(top, card_bottom, ease(card_t)).min(slot)..=bottom,
-        );
+        let clear = if under_card {
+            up_next.clear_below(top, h * 0.04)
+        } else {
+            top
+        };
+        let area = Rect::from_x_y_ranges(x_range, clear.min(slot)..=bottom);
         paint_lyrics(ui, painter, area, slot, base, view, scheme.text);
     }
     command
@@ -899,157 +901,6 @@ fn paint_edge_faded(
     }
 }
 
-/// Whether the Up next card is due: the last stretch of a song with another one queued.
-pub fn up_next_due(progress: f32, has_next: bool) -> bool {
-    has_next && progress >= UP_NEXT_AT
-}
-
-/// Share of the Up next stretch still to play, for the card's countdown bar.
-pub fn countdown_fraction(progress: f32) -> f32 {
-    ((1.0 - progress) / (1.0 - UP_NEXT_AT)).clamp(0.0, 1.0)
-}
-
-/// Horizontal offset of the card at slide amount `t` (0 hidden, 1 in place), pushing it
-/// `distance` to the right when hidden.
-pub fn slide_offset(t: f32, distance: f32) -> f32 {
-    (1.0 - ease(t)) * distance
-}
-
-/// Sizes of the Up next block: the queued song's cover with its title and artist beside it,
-/// and a countdown bar below, drawn straight over the backdrop.
-struct UpNextCard {
-    width: f32,
-    pad: f32,
-    thumb: f32,
-    /// Size unit: the window's shorter side.
-    unit: f32,
-}
-
-impl UpNextCard {
-    fn new(screen: Rect) -> Self {
-        let unit = screen.width().min(screen.height());
-        Self {
-            width: (unit * 0.36).min(screen.width() * 0.24),
-            pad: unit * 0.02,
-            thumb: unit * 0.075,
-            unit,
-        }
-    }
-
-    fn bar_height(&self) -> f32 {
-        (self.unit * 0.004).max(2.0)
-    }
-
-    fn height(&self) -> f32 {
-        self.thumb + self.pad * 0.7 + self.bar_height()
-    }
-}
-
-/// Lays out `text` on one row, ellipsized to `width`.
-fn one_row(painter: &Painter, text: &str, font: FontId, width: f32) -> Arc<Galley> {
-    let mut job = LayoutJob::simple_singleline(text.to_owned(), font, Color32::WHITE);
-    job.wrap = TextWrapping {
-        max_width: width,
-        max_rows: 1,
-        break_anywhere: true,
-        overflow_character: Some('…'),
-    };
-    painter.layout_job(job)
-}
-
-/// The queued song, sliding in from the right with its top-right corner at
-/// `corner` for the end of the song and out once it changes. Returns how far it is shown.
-fn paint_up_next(
-    ui: &egui::Ui,
-    painter: &Painter,
-    card: &UpNextCard,
-    corner: Pos2,
-    view: &View,
-    scheme: &Scheme,
-) -> f32 {
-    let player = view.player;
-    let progress = player.progress();
-    let due = up_next_due(progress, player.next.is_some());
-    let ctx = ui.ctx();
-    let id = Id::unique("spotify-up-next");
-    // The song stays on the card while it slides out after the song changes.
-    if due {
-        ctx.data_mut(|d| d.insert_temp(id, player.next.clone()));
-    }
-    let t = ctx.animate_bool_with_time(id.with("shown"), due, UP_NEXT_SLIDE);
-    if t <= 0.0 {
-        return 0.0;
-    }
-    let Some(song) = ctx.data(|d| d.get_temp::<Option<SongInfo>>(id)).flatten() else {
-        return 0.0;
-    };
-    let countdown = if due {
-        countdown_fraction(progress)
-    } else {
-        0.0
-    };
-
-    let UpNextCard {
-        width,
-        pad,
-        thumb,
-        unit,
-    } = *card;
-    let bar_h = card.bar_height();
-    let offset = slide_offset(t, width + (painter.clip_rect().right() - corner.x));
-    let left = corner.x - width + offset;
-
-    let mut painter = painter.clone();
-    painter.multiply_opacity(ease(t));
-
-    let thumb_rect = Rect::from_min_size(Pos2::new(left, corner.y), Vec2::splat(thumb));
-    let cover = view
-        .next_cover
-        .filter(|c| c.song_file == song.file)
-        .map(|c| &c.texture)
-        .or_else(|| {
-            view.art
-                .current
-                .filter(|a| a.song_file == song.file)
-                .map(|a| &a.cover)
-        });
-    let thumb_radius = (thumb * 0.1) as u8;
-    match cover {
-        Some(tex) => {
-            painter.add(
-                RectShape::filled(thumb_rect, thumb_radius, Color32::WHITE)
-                    .with_texture(tex.id(), square_uv(tex.size_vec2())),
-            );
-        }
-        None => {
-            painter.rect_filled(thumb_rect, thumb_radius, with_alpha(scheme.text, 0.12));
-        }
-    }
-
-    let text_x = thumb_rect.right() + pad * 0.8;
-    let text_w = left + width - text_x;
-    let title = one_row(&painter, &song.title, font_bold(unit * 0.028), text_w);
-    let artist = one_row(&painter, &song.artist, font_bold(unit * 0.021), text_w);
-    let gap = unit * 0.005;
-    let text_h = title.size().y + gap + artist.size().y;
-    let text_top = thumb_rect.center().y - text_h / 2.0;
-    let artist_top = text_top + title.size().y + gap;
-    painter.galley_with_override_text_color(Pos2::new(text_x, text_top), title, scheme.text);
-    painter.galley_with_override_text_color(Pos2::new(text_x, artist_top), artist, scheme.subtext);
-
-    let track = Rect::from_min_size(
-        Pos2::new(left, thumb_rect.bottom() + pad * 0.7),
-        Vec2::new(width, bar_h),
-    );
-    let bar_radius = (bar_h / 2.0) as u8;
-    painter.rect_filled(track, bar_radius, with_alpha(scheme.text, 0.2));
-    let fill = Rect::from_min_size(track.min, Vec2::new(track.width() * countdown, bar_h));
-    // A light shade of the art's primary colour.
-    let fill_color = mix(scheme.primary, scheme.text, 0.5);
-    painter.rect_filled(fill, bar_radius, fill_color);
-    t
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1202,19 +1053,5 @@ mod tests {
         );
         let range = lyrics_x_range(&narrow, 900.0, LyricsAlign::Left);
         assert!(range.max <= narrow.play.right() + 1e-3);
-    }
-
-    #[test]
-    fn up_next_timing() {
-        assert!(!up_next_due(0.89, true));
-        assert!(up_next_due(0.9, true));
-        assert!(!up_next_due(0.95, false));
-        assert_eq!(countdown_fraction(0.9), 1.0);
-        assert!((countdown_fraction(0.95) - 0.5).abs() < 1e-4);
-        assert_eq!(countdown_fraction(1.0), 0.0);
-        assert_eq!(countdown_fraction(0.2), 1.0);
-        assert_eq!(slide_offset(0.0, 100.0), 100.0);
-        assert_eq!(slide_offset(1.0, 100.0), 0.0);
-        assert!((slide_offset(0.5, 100.0) - 50.0).abs() < 1e-4);
     }
 }
