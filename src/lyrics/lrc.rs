@@ -77,13 +77,9 @@ pub fn to_lrc(lyrics: &Lyrics) -> String {
     match lyrics {
         Lyrics::Synced(lines) => {
             for line in lines {
-                let ms = line.time.as_millis();
-                let (min, sec, frac) = (ms / 60_000, (ms / 1000) % 60, ms % 1000);
-                if frac % 10 == 0 {
-                    out.push_str(&format!("[{min:02}:{sec:02}.{:02}]", frac / 10));
-                } else {
-                    out.push_str(&format!("[{min:02}:{sec:02}.{frac:03}]"));
-                }
+                out.push('[');
+                out.push_str(&format_timestamp(line.time));
+                out.push(']');
                 out.push_str(&line.text);
                 out.push('\n');
             }
@@ -96,6 +92,59 @@ pub fn to_lrc(lyrics: &Lyrics) -> String {
         }
     }
     out
+}
+
+/// `mm:ss.xx`, or `mm:ss.xxx` when the time is not a whole number of centiseconds.
+pub fn format_timestamp(time: Duration) -> String {
+    let ms = time.as_millis();
+    let (min, sec, frac) = (ms / 60_000, (ms / 1000) % 60, ms % 1000);
+    if frac % 10 == 0 {
+        format!("{min:02}:{sec:02}.{:02}", frac / 10)
+    } else {
+        format!("{min:02}:{sec:02}.{frac:03}")
+    }
+}
+
+/// Value of the first `[key:value]` metadata tag named `key` (case-insensitive), trimmed.
+pub fn tag_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    text.lines().find_map(|line| {
+        let tag = line.trim().strip_prefix('[')?;
+        let tag = &tag[..tag.find(']')?];
+        let (k, v) = tag.split_once(':')?;
+        (k.trim().eq_ignore_ascii_case(key) && is_metadata(tag)).then(|| v.trim())
+    })
+}
+
+/// The `[length:mm:ss.xx]` tag: the duration of the recording the lyrics were timed against.
+pub fn length_tag(text: &str) -> Option<Duration> {
+    let ms = parse_timestamp(tag_value(text, "length")?)?;
+    (ms > 0).then(|| Duration::from_millis(ms))
+}
+
+/// Decodes lyrics file contents: UTF-8 (BOM optional), UTF-16 with a BOM, else Latin-1.
+pub fn decode_text(bytes: &[u8]) -> String {
+    let utf16 = |be: bool| {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| {
+                if be {
+                    u16::from_be_bytes([c[0], c[1]])
+                } else {
+                    u16::from_le_bytes([c[0], c[1]])
+                }
+            })
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
+    match bytes {
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
+        [0xFF, 0xFE, ..] => utf16(false),
+        [0xFE, 0xFF, ..] => utf16(true),
+        _ => match std::str::from_utf8(bytes) {
+            Ok(s) => s.to_owned(),
+            Err(_) => bytes.iter().map(|&b| char::from(b)).collect(),
+        },
+    }
 }
 
 /// Plain-text lyrics: trimmed lines with leading/trailing blank lines removed.
@@ -265,6 +314,36 @@ mod tests {
     fn bom_stripped() {
         let l = parse_lrc("\u{feff}[00:01.00]a");
         assert_eq!(synced(&l), vec![(1000, "a")]);
+    }
+
+    #[test]
+    fn tags_and_length() {
+        let text = "[ti:Song]\n[length: 03:20.50 ]\n[00:01.00]a";
+        assert_eq!(tag_value(text, "TI"), Some("Song"));
+        assert_eq!(tag_value(text, "ar"), None);
+        assert_eq!(length_tag(text), Some(Duration::from_millis(200_500)));
+        assert_eq!(length_tag("[length:03:20]"), Some(Duration::from_secs(200)));
+        assert_eq!(length_tag("[length:soon]"), None);
+        assert_eq!(length_tag("[00:01.00]a"), None);
+        assert_eq!(format_timestamp(Duration::from_millis(62_340)), "01:02.34");
+        assert_eq!(format_timestamp(Duration::from_millis(62_345)), "01:02.345");
+    }
+
+    #[test]
+    fn decoding_fallbacks() {
+        assert_eq!(decode_text("[00:01.00]é".as_bytes()), "[00:01.00]é");
+        assert_eq!(decode_text(b"\xEF\xBB\xBFabc"), "abc");
+        assert_eq!(decode_text(b"caf\xE9"), "café");
+        let le: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("hé".encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        assert_eq!(decode_text(&le), "hé");
+        let be: Vec<u8> = [0xFE, 0xFF]
+            .into_iter()
+            .chain("hé".encode_utf16().flat_map(u16::to_be_bytes))
+            .collect();
+        assert_eq!(decode_text(&be), "hé");
     }
 
     #[test]

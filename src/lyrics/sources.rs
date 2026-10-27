@@ -1,50 +1,74 @@
-//! Lyrics sources: sidecar files, a local folder, the on-disk cache and LRCLIB.
+//! Lyrics sources: manual overrides, sidecar files, a local folder, the on-disk cache, LRCLIB
+//! and KuGou.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use serde::Deserialize;
+use super::lrc::{decode_text, parse_lrc, plain_from_text};
+use super::search::{self, LrclibTrack, SearchRequest, KUGOU_AUTO_LIMIT};
+use super::{manual, Lyrics, LyricsConfig, Origin, Provider, SongKey};
 
-use super::lrc::{parse_lrc, plain_from_text, to_lrc};
-use super::{Lyrics, LyricsConfig, SongKey};
-
-const LRCLIB_BASE: &str = "https://lrclib.net/api";
+pub(crate) const LRCLIB_BASE: &str = "https://lrclib.net/api";
 const USER_AGENT: &str = concat!(
     "encore/",
     env!("CARGO_PKG_VERSION"),
     " (https://github.com/allylikesu/mpd-display-rs)"
 );
-const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Limit for a whole request, including name resolution and the response body. Resolving a
+/// host can take several seconds on some systems.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+/// Limit for the TCP connection itself, so an unreachable address fails fast.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long an idle connection is kept for reuse. Long enough to span a typical song, so the
+/// next song's lookup skips name resolution and the TLS handshake. Connections the server
+/// closed in the meantime are detected and replaced.
+const MAX_IDLE_AGE: Duration = Duration::from_secs(300);
 /// How long a `.notfound` marker suppresses online lookups.
 const NOTFOUND_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-/// Maximum duration mismatch for a search result's synced lyrics.
-const DURATION_TOLERANCE_SECS: f64 = 5.0;
+/// Contents of a `.notfound` marker: the providers that found nothing. Markers with other
+/// contents were written before every provider was consulted and are ignored.
+const NOTFOUND_MARKER: &str = "lrclib kugou\n";
+/// Cache file tag naming the provider the lyrics came from.
+const SOURCE_TAG: &str = "source";
 const MAX_KEY_BYTES: usize = 150;
+
+/// Lyrics found by a lookup.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Found {
+    pub lyrics: Lyrics,
+    pub origin: Origin,
+    /// Text the lyrics were parsed from: LRC or plain text.
+    pub text: String,
+}
 
 /// Outcome of a full lookup.
 #[derive(Debug, PartialEq)]
 pub enum Lookup {
-    Found(Lyrics),
+    Found(Found),
     /// No lyrics exist in any enabled source.
     NotFound,
     /// No local hit and the online lookup failed transiently.
     Failed,
 }
 
-/// Runs the lookup chain: sidecar, local folder, cache, then LRCLIB when `agent` is given
-/// and `config.online` is set. Online hits are written to the cache.
+/// Runs the lookup chain: manual override, sidecar, local folder, cache, then the online
+/// providers when `agent` is given and `config.online` is set. Online hits are written to the
+/// cache.
 pub fn lookup(config: &LyricsConfig, key: &SongKey, agent: Option<&ureq::Agent>) -> Lookup {
-    if let Some(l) = sidecar(config.music_dir.as_deref(), &key.file) {
-        return Lookup::Found(l);
-    }
-    if let Some(l) = local(&config.local_dir, key) {
-        return Lookup::Found(l);
-    }
     let cache_dir = config.cache_dir.as_deref();
+    if let Some((lyrics, text)) = cache_dir.and_then(|d| manual::read_override(d, key)) {
+        return found(lyrics, Origin::Manual, text);
+    }
+    if let Some((lyrics, text)) = sidecar(config.music_dir.as_deref(), &key.file) {
+        return found(lyrics, Origin::Sidecar, text);
+    }
+    if let Some((lyrics, text)) = local(&config.local_dir, key) {
+        return found(lyrics, Origin::Local, text);
+    }
     if let Some(dir) = cache_dir {
         match read_cache(dir, key) {
-            CacheEntry::Hit(l) => return Lookup::Found(l),
+            CacheEntry::Hit(found) => return Lookup::Found(found),
             CacheEntry::NotFound => return Lookup::NotFound,
             CacheEntry::Miss => {}
         }
@@ -52,30 +76,44 @@ pub fn lookup(config: &LyricsConfig, key: &SongKey, agent: Option<&ureq::Agent>)
     let Some(agent) = agent.filter(|_| config.online) else {
         return Lookup::NotFound;
     };
-    match fetch_lrclib(agent, key) {
-        Ok(Some(l)) => {
-            if let Some(dir) = cache_dir {
-                write_cache(dir, key, &l);
+    let online = fetch_online(agent, key);
+    match (online.found, online.error) {
+        (Some((lyrics, provider, text)), error) => {
+            match (cache_dir, error) {
+                (Some(dir), None) => write_cache(dir, key, provider, &text),
+                // A provider failed, so a better result may exist; look again next time.
+                (_, Some(e)) => log::warn!("lyrics lookup partly failed for {:?}: {e}", key.file),
+                (None, None) => {}
             }
-            Lookup::Found(l)
+            found(lyrics, Origin::Online(provider), text)
         }
-        Ok(None) => {
+        (None, None) => {
             if let Some(dir) = cache_dir {
                 write_notfound(dir, key);
             }
             Lookup::NotFound
         }
-        Err(e) => {
-            log::warn!("LRCLIB lookup failed for {:?}: {e}", key.file);
+        (None, Some(e)) => {
+            log::warn!("lyrics lookup failed for {:?}: {e}", key.file);
             Lookup::Failed
         }
     }
 }
 
-/// HTTP agent for LRCLIB requests.
+fn found(lyrics: Lyrics, origin: Origin, text: String) -> Lookup {
+    Lookup::Found(Found {
+        lyrics,
+        origin,
+        text,
+    })
+}
+
+/// HTTP agent for lyrics and artwork requests.
 pub fn new_agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(HTTP_TIMEOUT))
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .max_idle_age(MAX_IDLE_AGE)
         .user_agent(USER_AGENT)
         .build()
         .new_agent()
@@ -149,7 +187,7 @@ fn sanitize(s: &str) -> String {
 
 fn read_text(path: &Path) -> Option<String> {
     match fs::read(path) {
-        Ok(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
+        Ok(bytes) => Some(decode_text(&bytes)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
             log::warn!("failed to read {}: {e}", path.display());
@@ -158,7 +196,8 @@ fn read_text(path: &Path) -> Option<String> {
     }
 }
 
-fn parse_file(path: &Path) -> Option<Lyrics> {
+/// A `.txt` file as plain lyrics, anything else as LRC, with the file text.
+fn parse_file(path: &Path) -> Option<(Lyrics, String)> {
     let text = read_text(path)?;
     let is_txt = path
         .extension()
@@ -168,12 +207,12 @@ fn parse_file(path: &Path) -> Option<Lyrics> {
     } else {
         parse_lrc(&text)
     };
-    (!lyrics.is_empty()).then_some(lyrics)
+    (!lyrics.is_empty()).then_some((lyrics, text))
 }
 
 /// `<file>.lrc`, then `.txt` as plain lyrics, next to the audio file: `file` itself when it is
 /// an absolute path, else `file` under `music_dir`.
-fn sidecar(music_dir: Option<&Path>, file: &str) -> Option<Lyrics> {
+fn sidecar(music_dir: Option<&Path>, file: &str) -> Option<(Lyrics, String)> {
     if file.is_empty() || file.contains("://") {
         return None;
     }
@@ -190,7 +229,7 @@ fn sidecar(music_dir: Option<&Path>, file: &str) -> Option<Lyrics> {
 
 /// `<local_dir>/<artist> - <title>.lrc` (or `.txt`), matched case-insensitively; the
 /// primary artist and a bare title are tried as fallbacks.
-fn local(dir: &Path, key: &SongKey) -> Option<Lyrics> {
+fn local(dir: &Path, key: &SongKey) -> Option<(Lyrics, String)> {
     let title = derive_title(key);
     if title.is_empty() {
         return None;
@@ -232,16 +271,45 @@ fn local(dir: &Path, key: &SongKey) -> Option<Lyrics> {
 
 #[derive(Debug, PartialEq)]
 enum CacheEntry {
-    Hit(Lyrics),
+    Hit(Found),
     /// Fresh not-found marker.
     NotFound,
     Miss,
 }
 
+/// The text without `[source:]` lines.
+fn strip_source_tag(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let tag = line.trim_start().to_ascii_lowercase();
+        if !tag.starts_with(&format!("[{SOURCE_TAG}:")) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Cache files are LRC with a `[source:<provider>]` line. Files without timestamps are plain
+/// lyrics. A file without the tag comes from LRCLIB.
 fn read_cache(dir: &Path, key: &SongKey) -> CacheEntry {
     let name = cache_key(key);
-    if let Some(l) = parse_file(&dir.join(format!("{name}.lrc"))) {
-        return CacheEntry::Hit(l);
+    if let Some(raw) = read_text(&dir.join(format!("{name}.lrc"))) {
+        let provider = super::lrc::tag_value(&raw, SOURCE_TAG)
+            .and_then(Provider::from_tag)
+            .unwrap_or(Provider::Lrclib);
+        let text = strip_source_tag(&raw);
+        let lyrics = match parse_lrc(&text) {
+            l @ Lyrics::Synced(_) => l,
+            Lyrics::Plain(_) => plain_from_text(&text),
+        };
+        if !lyrics.is_empty() {
+            return CacheEntry::Hit(Found {
+                lyrics,
+                origin: Origin::Cache(provider),
+                text,
+            });
+        }
     }
     let marker = dir.join(format!("{name}.notfound"));
     let fresh = fs::metadata(&marker)
@@ -249,17 +317,18 @@ fn read_cache(dir: &Path, key: &SongKey) -> CacheEntry {
         .ok()
         .and_then(|t| SystemTime::now().duration_since(t).ok())
         .is_some_and(|age| age < NOTFOUND_TTL);
-    if fresh {
+    if fresh && read_text(&marker).as_deref() == Some(NOTFOUND_MARKER) {
         CacheEntry::NotFound
     } else {
         CacheEntry::Miss
     }
 }
 
-fn write_cache(dir: &Path, key: &SongKey, lyrics: &Lyrics) {
+fn write_cache(dir: &Path, key: &SongKey, provider: Provider, text: &str) {
     let name = cache_key(key);
-    let result = fs::create_dir_all(dir)
-        .and_then(|_| fs::write(dir.join(format!("{name}.lrc")), to_lrc(lyrics)));
+    let contents = format!("[{SOURCE_TAG}:{}]\n{}\n", provider.tag(), text.trim());
+    let result =
+        fs::create_dir_all(dir).and_then(|_| fs::write(dir.join(format!("{name}.lrc")), contents));
     if let Err(e) = result {
         log::warn!("failed to write lyrics cache in {}: {e}", dir.display());
     }
@@ -268,113 +337,103 @@ fn write_cache(dir: &Path, key: &SongKey, lyrics: &Lyrics) {
 
 fn write_notfound(dir: &Path, key: &SongKey) {
     let path = dir.join(format!("{}.notfound", cache_key(key)));
-    if let Err(e) = fs::create_dir_all(dir).and_then(|_| fs::write(&path, b"")) {
+    if let Err(e) = fs::create_dir_all(dir).and_then(|_| fs::write(&path, NOTFOUND_MARKER)) {
         log::warn!("failed to write {}: {e}", path.display());
     }
 }
 
-/// A track record from the LRCLIB API.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct LrclibTrack {
-    #[serde(default)]
-    pub synced_lyrics: Option<String>,
-    #[serde(default)]
-    pub plain_lyrics: Option<String>,
-    #[serde(default)]
-    pub instrumental: bool,
-    #[serde(default)]
-    pub duration: f64,
+/// Result of the online lookup: the lyrics found, if any, and the first transient error when
+/// a provider failed and no synced lyrics were found.
+struct Online {
+    found: Option<(Lyrics, Provider, String)>,
+    error: Option<ureq::Error>,
 }
 
-impl LrclibTrack {
-    fn has_synced(&self) -> bool {
-        !self.instrumental
-            && self
-                .synced_lyrics
-                .as_deref()
-                .is_some_and(|s| !s.trim().is_empty())
-    }
-
-    fn has_plain(&self) -> bool {
-        !self.instrumental
-            && self
-                .plain_lyrics
-                .as_deref()
-                .is_some_and(|s| !s.trim().is_empty())
-    }
-
-    fn synced(&self) -> Option<Lyrics> {
-        self.has_synced()
-            .then(|| parse_lrc(self.synced_lyrics.as_deref().unwrap_or_default()))
-            .filter(|l| !l.is_empty())
-    }
-
-    fn plain(&self) -> Option<Lyrics> {
-        self.has_plain()
-            .then(|| plain_from_text(self.plain_lyrics.as_deref().unwrap_or_default()))
-            .filter(|l| !l.is_empty())
+impl Online {
+    fn done(found: Option<(Lyrics, Provider, String)>) -> Self {
+        Self { found, error: None }
     }
 }
 
-/// Synced lyrics if present, else plain. None for instrumentals or empty records.
-pub fn lyrics_from_track(track: &LrclibTrack) -> Option<Lyrics> {
-    track.synced().or_else(|| track.plain())
-}
-
-/// Best search result: among tracks within ±5s of `duration` (all tracks when unknown),
-/// prefer synced lyrics, then the closest duration. When no track is within tolerance,
-/// plain lyrics from the closest track are used since their timing is irrelevant.
-pub fn pick_from_search(results: &[LrclibTrack], duration: Option<u64>) -> Option<Lyrics> {
-    let distance = |t: &LrclibTrack| duration.map_or(0.0, |d| (t.duration - d as f64).abs());
-    let in_tolerance = |t: &&LrclibTrack| distance(t) <= DURATION_TOLERANCE_SECS;
-    let closest = |a: &&LrclibTrack, b: &&LrclibTrack| distance(a).total_cmp(&distance(b));
-
-    let mut candidates: Vec<&LrclibTrack> = results
-        .iter()
-        .filter(in_tolerance)
-        .filter(|t| t.has_synced() || t.has_plain())
-        .collect();
-    candidates.sort_by(|a, b| b.has_synced().cmp(&a.has_synced()).then(closest(a, b)));
-    if let Some(l) = candidates.iter().find_map(|t| lyrics_from_track(t)) {
-        return Some(l);
+/// LRCLIB's exact match, then the best synced match from LRCLIB's search, then KuGou's.
+/// Plain lyrics from LRCLIB are the last resort. A sure instrumental match ends the lookup
+/// without lyrics.
+fn fetch_online(agent: &ureq::Agent, key: &SongKey) -> Online {
+    let req = SearchRequest::from_key(key);
+    if req.title.is_empty() {
+        return Online::done(None);
     }
+    let from_candidate = |c: &search::Candidate| ((*c.lyrics).clone(), c.provider, c.text.clone());
+    let mut plain = None;
+    let mut error = None;
 
-    let mut rest: Vec<&LrclibTrack> = results.iter().filter(|t| t.has_plain()).collect();
-    rest.sort_by(closest);
-    rest.iter().find_map(|t| t.plain())
-}
-
-/// Queries LRCLIB with the full artist, then the primary artist. `Ok(None)` is a
-/// definitive miss; `Err` is a transient failure.
-fn fetch_lrclib(agent: &ureq::Agent, key: &SongKey) -> Result<Option<Lyrics>, ureq::Error> {
-    let title = derive_title(key);
-    if title.is_empty() {
-        return Ok(None);
-    }
-    let artist = key.artist.trim();
-    let primary = primary_artist(artist);
-    let mut artists = vec![artist];
-    if !primary.is_empty() && primary != artist {
+    let primary = primary_artist(&req.artist);
+    let mut artists = vec![req.artist.as_str()];
+    if !primary.is_empty() && primary != req.artist {
         artists.push(&primary);
     }
-    for a in artists {
-        if let Some(l) = lrclib_get(agent, a, &title, key)? {
-            return Ok(Some(l));
-        }
-        if let Some(l) = lrclib_search(agent, a, &title, key.duration_secs)? {
-            return Ok(Some(l));
+    for artist in artists {
+        match lrclib_get(agent, artist, &req.title, key) {
+            Ok(Some(track)) if track.instrumental => return Online::done(None),
+            Ok(Some(track)) => {
+                if let Some(l) = track.synced() {
+                    let text = search::lrclib_text(&track);
+                    return Online::done(Some((l, Provider::Lrclib, text)));
+                }
+                if plain.is_none() {
+                    plain = track
+                        .plain()
+                        .map(|l| (l, Provider::Lrclib, search::lrclib_text(&track)));
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                error = Some(e);
+                break;
+            }
         }
     }
-    Ok(None)
+
+    let (lrclib, kugou) = search::search_providers(agent, &req, KUGOU_AUTO_LIMIT, &|| false);
+    match lrclib {
+        Ok(found) => {
+            if found.instrumental {
+                return Online::done(plain);
+            }
+            if let Some(c) = search::best_synced(&found.candidates) {
+                return Online::done(Some(from_candidate(c)));
+            }
+            if plain.is_none() {
+                plain = found
+                    .candidates
+                    .iter()
+                    .find(|c| !c.synced() && c.is_sure_match())
+                    .map(from_candidate);
+            }
+        }
+        Err(e) => error = error.or(Some(e)),
+    }
+    match kugou {
+        Ok(found) => {
+            if let Some(c) = search::best_synced(&found) {
+                return Online::done(Some(from_candidate(c)));
+            }
+        }
+        Err(e) => error = error.or(Some(e)),
+    }
+    Online {
+        found: plain,
+        error,
+    }
 }
 
+/// LRCLIB's exact-match endpoint. `Ok(None)` when it has no such track.
 fn lrclib_get(
     agent: &ureq::Agent,
     artist: &str,
     title: &str,
     key: &SongKey,
-) -> Result<Option<Lyrics>, ureq::Error> {
+) -> Result<Option<LrclibTrack>, ureq::Error> {
     let mut req = agent
         .get(format!("{LRCLIB_BASE}/get"))
         .query("artist_name", artist)
@@ -383,35 +442,11 @@ fn lrclib_get(
     if !album.is_empty() {
         req = req.query("album_name", album);
     }
-    if let Some(d) = key.duration_secs {
-        req = req.query("duration", d.to_string());
+    if let Some(d) = key.duration {
+        req = req.query("duration", format!("{:.0}", d.as_secs_f64()));
     }
     match req.call() {
-        Ok(mut resp) => Ok(lyrics_from_track(
-            &resp.body_mut().read_json::<LrclibTrack>()?,
-        )),
-        Err(ureq::Error::StatusCode(404)) => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
-fn lrclib_search(
-    agent: &ureq::Agent,
-    artist: &str,
-    title: &str,
-    duration: Option<u64>,
-) -> Result<Option<Lyrics>, ureq::Error> {
-    let mut req = agent
-        .get(format!("{LRCLIB_BASE}/search"))
-        .query("track_name", title);
-    if !artist.is_empty() {
-        req = req.query("artist_name", artist);
-    }
-    match req.call() {
-        Ok(mut resp) => {
-            let results = resp.body_mut().read_json::<Vec<LrclibTrack>>()?;
-            Ok(pick_from_search(&results, duration))
-        }
+        Ok(mut resp) => Ok(Some(resp.body_mut().read_json::<LrclibTrack>()?)),
         Err(ureq::Error::StatusCode(404)) => Ok(None),
         Err(e) => Err(e),
     }
@@ -443,7 +478,7 @@ pub(crate) mod tests {
             artist: artist.into(),
             title: title.into(),
             album: String::new(),
-            duration_secs: None,
+            duration: None,
         }
     }
 
@@ -456,12 +491,17 @@ pub(crate) mod tests {
         }
     }
 
-    fn track(synced: Option<&str>, plain: Option<&str>, duration: f64) -> LrclibTrack {
-        LrclibTrack {
-            synced_lyrics: synced.map(Into::into),
-            plain_lyrics: plain.map(Into::into),
-            instrumental: false,
-            duration,
+    fn lyrics_of(lookup: Lookup) -> Lyrics {
+        match lookup {
+            Lookup::Found(f) => f.lyrics,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn origin_of(lookup: Lookup) -> Origin {
+        match lookup {
+            Lookup::Found(f) => f.origin,
+            other => panic!("{other:?}"),
         }
     }
 
@@ -515,57 +555,30 @@ pub(crate) mod tests {
     #[test]
     fn lrclib_fixture_parsing() {
         let t: LrclibTrack = serde_json::from_str(GET_FIXTURE).unwrap();
-        assert_eq!(t.duration, 233.0);
-        let l = lyrics_from_track(&t).unwrap();
+        assert_eq!(t.duration, Some(233.0));
+        let l = t.lyrics().unwrap();
         assert!(
             matches!(&l, Lyrics::Synced(v) if v.len() == 2 && v[0].text == "I feel your breath")
         );
+        assert!(search::lrclib_text(&t).starts_with(
+            "[ar:Borislav Slavov]\n[al:Baldur's Gate 3]\n[ti:I Want to Live]\n[length:03:53.00]\n"
+        ));
 
         let t: LrclibTrack = serde_json::from_str(
             r#"{"duration": 100.5, "instrumental": false, "plainLyrics": "a\nb", "syncedLyrics": null}"#,
         )
         .unwrap();
         assert_eq!(
-            lyrics_from_track(&t),
+            t.lyrics(),
             Some(Lyrics::Plain(vec!["a".into(), "b".into()]))
         );
+        assert_eq!(search::lrclib_text(&t), "a\nb");
 
         let t: LrclibTrack = serde_json::from_str(
             r#"{"duration": 100, "instrumental": true, "plainLyrics": null, "syncedLyrics": null}"#,
         )
         .unwrap();
-        assert_eq!(lyrics_from_track(&t), None);
-
-        let list: Vec<LrclibTrack> = serde_json::from_str(&format!("[{GET_FIXTURE}]")).unwrap();
-        assert!(pick_from_search(&list, Some(234)).is_some());
-    }
-
-    #[test]
-    fn search_prefers_synced_then_closest() {
-        let results = vec![
-            track(None, Some("plain close"), 200.0),
-            track(Some("[00:01.00]synced far"), None, 204.0),
-            track(Some("[00:01.00]synced near"), None, 201.0),
-            track(Some("[00:01.00]synced out"), None, 230.0),
-        ];
-        let text = |l: Option<Lyrics>| match l.unwrap() {
-            Lyrics::Synced(v) => v[0].text.clone(),
-            Lyrics::Plain(v) => v[0].clone(),
-        };
-        assert_eq!(text(pick_from_search(&results, Some(200))), "synced near");
-        assert_eq!(text(pick_from_search(&results, Some(230))), "synced out");
-        // Unknown duration: first synced result.
-        assert_eq!(text(pick_from_search(&results, None)), "synced far");
-        // Nothing in tolerance: closest plain lyrics.
-        assert_eq!(text(pick_from_search(&results, Some(100))), "plain close");
-        let synced_only = &results[1..];
-        assert_eq!(pick_from_search(synced_only, Some(100)), None);
-        assert_eq!(pick_from_search(&[], Some(100)), None);
-        let instrumental = LrclibTrack {
-            instrumental: true,
-            ..track(Some("[00:01.00]x"), Some("x"), 200.0)
-        };
-        assert_eq!(pick_from_search(&[instrumental], Some(200)), None);
+        assert_eq!(t.lyrics(), None);
     }
 
     #[test]
@@ -579,13 +592,14 @@ pub(crate) mod tests {
 
         let k = key("Artist/Album/01 Song.flac", "Artist", "Song");
         assert!(matches!(
-            lookup(&cfg, &k, None),
-            Lookup::Found(Lyrics::Synced(_))
+            lyrics_of(lookup(&cfg, &k, None)),
+            Lyrics::Synced(_)
         ));
+        assert_eq!(origin_of(lookup(&cfg, &k, None)), Origin::Sidecar);
         let k = key("Artist/Album/02 Other.mp3", "Artist", "Other");
         assert_eq!(
-            lookup(&cfg, &k, None),
-            Lookup::Found(Lyrics::Plain(vec!["plain one".into(), "plain two".into()]))
+            lyrics_of(lookup(&cfg, &k, None)),
+            Lyrics::Plain(vec!["plain one".into(), "plain two".into()])
         );
         let k = key("Artist/Album/03 None.mp3", "Artist", "None");
         assert_eq!(lookup(&cfg, &k, None), Lookup::NotFound);
@@ -598,8 +612,8 @@ pub(crate) mod tests {
         let absolute = album.join("01 Song.flac");
         let k = key(&absolute.to_string_lossy(), "Artist", "Song");
         assert!(matches!(
-            lookup(&no_music_dir, &k, None),
-            Lookup::Found(Lyrics::Synced(_))
+            lyrics_of(lookup(&no_music_dir, &k, None)),
+            Lyrics::Synced(_)
         ));
         let k = key("Artist/Album/01 Song.flac", "Artist", "Song");
         assert_eq!(lookup(&no_music_dir, &k, None), Lookup::NotFound);
@@ -619,7 +633,7 @@ pub(crate) mod tests {
         fs::write(cfg.local_dir.join("Lead - Duet.lrc"), "[00:03.00]y").unwrap();
 
         let k = key("a.flac", "the band", "some song");
-        assert!(matches!(lookup(&cfg, &k, None), Lookup::Found(_)));
+        assert_eq!(origin_of(lookup(&cfg, &k, None)), Origin::Local);
         let k = key("b.flac", "Lead feat. Guest", "Duet");
         assert!(matches!(lookup(&cfg, &k, None), Lookup::Found(_)));
         let k = key("c.flac", "The Band", "Missing");
@@ -635,18 +649,35 @@ pub(crate) mod tests {
         let k = key("x.flac", "Artist", "Cached");
         assert_eq!(read_cache(&cache, &k), CacheEntry::Miss);
 
-        let lyrics = parse_lrc("[00:01.00]one\n[00:02.50]two");
-        write_cache(&cache, &k, &lyrics);
+        let text = "[length:01:00.00]\n[00:01.00]one\n[00:02.50]two";
+        write_cache(&cache, &k, Provider::Kugou, text);
         assert!(cache.join("artist - cached.lrc").exists());
-        assert_eq!(lookup(&cfg, &k, None), Lookup::Found(lyrics));
+        let CacheEntry::Hit(hit) = read_cache(&cache, &k) else {
+            panic!("expected a cache hit");
+        };
+        assert_eq!(hit.lyrics, parse_lrc(text));
+        assert_eq!(hit.origin, Origin::Cache(Provider::Kugou));
+        assert_eq!(hit.text, format!("{text}\n"));
+
+        // Files without a source tag come from LRCLIB.
+        fs::write(cache.join("artist - cached.lrc"), "[00:01.00]old").unwrap();
+        assert_eq!(
+            origin_of(lookup(&cfg, &k, None)),
+            Origin::Cache(Provider::Lrclib)
+        );
 
         let k = key("y.flac", "Artist", "Absent");
         write_notfound(&cache, &k);
         assert_eq!(read_cache(&cache, &k), CacheEntry::NotFound);
         assert_eq!(lookup(&cfg, &k, None), Lookup::NotFound);
 
-        // A stale marker no longer counts.
+        // A marker from before every provider was consulted no longer counts.
         let marker = cache.join("artist - absent.notfound");
+        fs::write(&marker, "").unwrap();
+        assert_eq!(read_cache(&cache, &k), CacheEntry::Miss);
+
+        // A stale marker no longer counts.
+        write_notfound(&cache, &k);
         let old = SystemTime::now() - NOTFOUND_TTL - Duration::from_secs(60);
         fs::File::options()
             .write(true)
@@ -656,13 +687,17 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(read_cache(&cache, &k), CacheEntry::Miss);
 
-        // Writing lyrics clears the marker.
-        write_cache(&cache, &k, &Lyrics::Plain(vec!["p".into()]));
+        // Writing lyrics clears the marker; plain lyrics keep bracketed lines.
+        write_cache(&cache, &k, Provider::Lrclib, "p\n[Chorus]");
         assert!(!marker.exists());
+        let CacheEntry::Hit(hit) = read_cache(&cache, &k) else {
+            panic!("expected a cache hit");
+        };
         assert_eq!(
-            read_cache(&cache, &k),
-            CacheEntry::Hit(Lyrics::Plain(vec!["p".into()]))
+            hit.lyrics,
+            Lyrics::Plain(vec!["p".into(), "[Chorus]".into()])
         );
+        assert_eq!(hit.text, "p\n[Chorus]\n");
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -673,18 +708,19 @@ pub(crate) mod tests {
         let k = key("Song.flac", "Artist", "Song");
         fs::create_dir_all(dir.join("music")).unwrap();
         fs::create_dir_all(&cfg.local_dir).unwrap();
-        write_cache(
-            cfg.cache_dir.as_ref().unwrap(),
-            &k,
-            &Lyrics::Plain(vec!["cache".into()]),
-        );
+        let cache = cfg.cache_dir.clone().unwrap();
+        write_cache(&cache, &k, Provider::Lrclib, "cache");
         fs::write(cfg.local_dir.join("Artist - Song.lrc"), "local").unwrap();
         fs::write(dir.join("music/Song.lrc"), "sidecar").unwrap();
+        manual::write_override(&cache, &k, "manual").unwrap();
 
-        let first = |cfg: &LyricsConfig| match lookup(cfg, &k, None) {
-            Lookup::Found(Lyrics::Plain(v)) => v[0].clone(),
+        let first = |cfg: &LyricsConfig| match lyrics_of(lookup(cfg, &k, None)) {
+            Lyrics::Plain(v) => v[0].clone(),
             other => panic!("{other:?}"),
         };
+        assert_eq!(first(&cfg), "manual");
+        assert_eq!(origin_of(lookup(&cfg, &k, None)), Origin::Manual);
+        manual::delete_override(&cache, &k).unwrap();
         assert_eq!(first(&cfg), "sidecar");
         fs::remove_file(dir.join("music/Song.lrc")).unwrap();
         assert_eq!(first(&cfg), "local");
@@ -695,10 +731,13 @@ pub(crate) mod tests {
 
     #[test]
     #[ignore = "requires network"]
-    fn lrclib_live() {
+    fn online_live() {
         let mut k = key("x.flac", "Borislav Slavov feat. Someone", "I Want to Live");
-        k.duration_secs = Some(233);
-        let l = fetch_lrclib(&new_agent(), &k).unwrap().unwrap();
+        k.duration = Some(Duration::from_secs(233));
+        let online = fetch_online(&new_agent(), &k);
+        assert!(online.error.is_none(), "{:?}", online.error);
+        let (l, provider, _) = online.found.unwrap();
         assert!(matches!(l, Lyrics::Synced(_)));
+        assert_eq!(provider, Provider::Lrclib);
     }
 }

@@ -94,7 +94,7 @@ impl SongInfo {
             artist: self.artist.clone(),
             title: self.title.clone(),
             album: self.album.clone(),
-            duration_secs: self.duration.map(|d| d.as_secs()),
+            duration: self.duration,
         }
     }
 }
@@ -545,9 +545,9 @@ mod tests {
         assert_eq!(key.title, "b");
         assert_eq!(key.artist, "Artist");
         assert_eq!(key.album, "Album");
-        assert_eq!(key.duration_secs, Some(215));
+        assert_eq!(key.duration, Some(Duration::from_secs(215)));
         info.duration = None;
-        assert_eq!(info.lyrics_key().duration_secs, None);
+        assert_eq!(info.lyrics_key().duration, None);
     }
 
     #[test]
