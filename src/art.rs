@@ -11,8 +11,11 @@ use image::imageops::{self, FilterType};
 use image::{DynamicImage, RgbaImage};
 use log::{debug, warn};
 
+use base64::Engine;
+use percent_encoding::percent_decode_str;
+
 use crate::config::Config;
-use crate::player::SongInfo;
+use crate::player::{file_url_path, Origin, SongInfo};
 use crate::ui::scheme::Scheme;
 
 const BACKUP_ART_PATH: &str = "./assets/art_backup";
@@ -20,6 +23,8 @@ const ARTISTS_DIR: &str = "./artists";
 const ARTIST_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
 
 const COVER_MAX: u32 = 1024;
+/// Largest cover downloaded from an MPRIS player's `http(s)://` art URL.
+const ART_DOWNLOAD_MAX: u64 = 20 * 1024 * 1024;
 /// Longer side of the next song's cover thumbnail.
 const THUMB_MAX: u32 = 192;
 const ARTIST_BG_MAX: u32 = 2560;
@@ -88,13 +93,21 @@ pub struct Thumb {
 }
 
 enum Request {
-    Art { song_file: String, artist: String },
-    Thumb { song_file: String },
+    Art(SongInfo),
+    Thumb(SongInfo),
+}
+
+/// What identifies a song's art: its file, and for an MPRIS player the art URL, which players
+/// may send after the rest of the track's metadata.
+type ArtKey = (String, Origin);
+
+fn art_key(song: &SongInfo) -> ArtKey {
+    (song.file.clone(), song.origin.clone())
 }
 
 enum Loaded {
-    Art(String, Box<ArtImages>),
-    Thumb(String, ColorImage),
+    Art(ArtKey, Box<ArtImages>),
+    Thumb(ArtKey, ColorImage),
 }
 
 /// Loads album art, artist backgrounds and the next song's cover on a worker thread; textures
@@ -102,8 +115,8 @@ enum Loaded {
 pub struct ArtLoader {
     tx: mpsc::Sender<Request>,
     rx: mpsc::Receiver<Loaded>,
-    requested: RefCell<Option<String>>,
-    requested_thumb: RefCell<Option<String>>,
+    requested: RefCell<Option<ArtKey>>,
+    requested_thumb: RefCell<Option<ArtKey>>,
     current: Option<ArtTextures>,
     previous: Option<ArtTextures>,
     changed_at: Option<Instant>,
@@ -124,20 +137,20 @@ impl ArtLoader {
                     let (mut art, mut thumb) = (None, None);
                     for req in std::iter::once(req).chain(req_rx.try_iter()) {
                         match req {
-                            Request::Art { .. } => art = Some(req),
-                            Request::Thumb { .. } => thumb = Some(req),
+                            Request::Art(_) => art = Some(req),
+                            Request::Thumb(_) => thumb = Some(req),
                         }
                     }
                     for req in [art, thumb].into_iter().flatten() {
                         let loaded = match req {
-                            Request::Art { song_file, artist } => {
-                                let images = worker.load(&song_file, &artist);
-                                debug!("art ready for {song_file}");
-                                Loaded::Art(song_file, Box::new(images))
+                            Request::Art(song) => {
+                                let images = worker.load(&song);
+                                debug!("art ready for {}", song.file);
+                                Loaded::Art(art_key(&song), Box::new(images))
                             }
-                            Request::Thumb { song_file } => {
-                                let image = worker.thumb(&song_file);
-                                Loaded::Thumb(song_file, image)
+                            Request::Thumb(song) => {
+                                let image = worker.thumb(&song);
+                                Loaded::Thumb(art_key(&song), image)
                             }
                         };
                         if res_tx.send(loaded).is_err() {
@@ -163,34 +176,29 @@ impl ArtLoader {
         }
     }
 
-    /// Queues art loading for `song`, ignoring repeated requests for the same file.
+    /// Queues art loading for `song`, ignoring repeated requests for the same art.
     pub fn request(&self, song: &SongInfo) {
         let mut requested = self.requested.borrow_mut();
-        if requested.as_deref() == Some(song.file.as_str()) {
+        let key = art_key(song);
+        if requested.as_ref() == Some(&key) {
             return;
         }
-        *requested = Some(song.file.clone());
-        let req = Request::Art {
-            song_file: song.file.clone(),
-            artist: song.artist.clone(),
-        };
-        if self.tx.send(req).is_err() {
+        *requested = Some(key);
+        if self.tx.send(Request::Art(song.clone())).is_err() {
             warn!("art loader thread is gone");
         }
     }
 
     /// Queues the cover thumbnail of the queued `song`, ignoring repeated requests for the
-    /// same file.
+    /// same art.
     pub fn request_next(&self, song: &SongInfo) {
         let mut requested = self.requested_thumb.borrow_mut();
-        if requested.as_deref() == Some(song.file.as_str()) {
+        let key = art_key(song);
+        if requested.as_ref() == Some(&key) {
             return;
         }
-        *requested = Some(song.file.clone());
-        let req = Request::Thumb {
-            song_file: song.file.clone(),
-        };
-        if self.tx.send(req).is_err() {
+        *requested = Some(key);
+        if self.tx.send(Request::Thumb(song.clone())).is_err() {
             warn!("art loader thread is gone");
         }
     }
@@ -200,18 +208,18 @@ impl ArtLoader {
         let mut changed = false;
         while let Ok(loaded) = self.rx.try_recv() {
             match loaded {
-                Loaded::Art(file, images) => {
-                    if self.requested.borrow().as_deref() != Some(file.as_str()) {
+                Loaded::Art(key, images) => {
+                    if self.requested.borrow().as_ref() != Some(&key) {
                         continue;
                     }
-                    let textures = upload(ctx, &file, *images);
+                    let textures = upload(ctx, &key.0, *images);
                     self.previous = self.current.replace(textures);
                     self.changed_at = Some(Instant::now());
                     changed = true;
                 }
-                Loaded::Thumb(file, image) => {
-                    if self.requested_thumb.borrow().as_deref() == Some(file.as_str()) {
-                        self.thumb = Some(upload_thumb(ctx, &file, image));
+                Loaded::Thumb(key, image) => {
+                    if self.requested_thumb.borrow().as_ref() == Some(&key) {
+                        self.thumb = Some(upload_thumb(ctx, &key.0, image));
                     }
                 }
             }
@@ -278,18 +286,19 @@ pub fn upload_thumb(ctx: &egui::Context, song_file: &str, image: ColorImage) -> 
 
 /// Loads the art for `song` synchronously, the same way the background loader does.
 pub fn load_art_images(cfg: &Config, song: &SongInfo) -> ArtImages {
-    Worker::new(cfg).load(&song.file, &song.artist)
+    Worker::new(cfg).load(song)
 }
 
 /// Loads the cover thumbnail of `song` synchronously.
 pub fn load_thumb_image(cfg: &Config, song: &SongInfo) -> ColorImage {
-    Worker::new(cfg).thumb(&song.file)
+    Worker::new(cfg).thumb(song)
 }
 
 struct Worker {
     host: String,
     port: String,
     backup: Arc<DynamicImage>,
+    http: ureq::Agent,
 }
 
 impl Worker {
@@ -301,35 +310,35 @@ impl Worker {
             host: cfg.mpc_host(),
             port: cfg.mpd_port.to_string(),
             backup: Arc::new(backup),
+            http: encore::lyrics::sources::new_agent(),
         }
     }
 
-    /// The song's embedded or folder cover, or the backup art.
-    fn cover(&self, song_file: &str) -> DynamicImage {
-        ["readpicture", "albumart"]
-            .into_iter()
-            .find_map(|cmd| self.mpc_image(cmd, song_file))
-            .unwrap_or_else(|| (*self.backup).clone())
+    /// The song's cover from MPD (embedded or folder art) or from the MPRIS player's art URL,
+    /// or the backup art.
+    fn cover(&self, song: &SongInfo) -> DynamicImage {
+        match &song.origin {
+            Origin::Mpd => ["readpicture", "albumart"]
+                .into_iter()
+                .find_map(|cmd| self.mpc_image(cmd, &song.file)),
+            Origin::Mpris { art_url } => art_url.as_deref().and_then(|url| self.url_image(url)),
+        }
+        .unwrap_or_else(|| (*self.backup).clone())
     }
 
-    fn thumb(&self, song_file: &str) -> ColorImage {
-        to_color_image(
-            &self
-                .cover(song_file)
-                .thumbnail(THUMB_MAX, THUMB_MAX)
-                .to_rgba8(),
-        )
+    fn thumb(&self, song: &SongInfo) -> ColorImage {
+        to_color_image(&self.cover(song).thumbnail(THUMB_MAX, THUMB_MAX).to_rgba8())
     }
 
-    fn load(&self, song_file: &str, artist: &str) -> ArtImages {
-        let cover = self.cover(song_file);
+    fn load(&self, song: &SongInfo) -> ArtImages {
+        let cover = self.cover(song);
         let cover = if cover.width().max(cover.height()) > COVER_MAX {
             cover.resize(COVER_MAX, COVER_MAX, FilterType::Triangle)
         } else {
             cover
         };
         let small = cover.thumbnail(BACKDROP_SMALL, BACKDROP_SMALL).to_rgba8();
-        let artist = artist_background(artist);
+        let artist = artist_background(&song.artist);
         let artist_brightness = artist.as_ref().map_or(0.5, |img| {
             brightness(&img.thumbnail(PALETTE_SAMPLE, PALETTE_SAMPLE).to_rgba8())
         });
@@ -352,6 +361,37 @@ impl Worker {
                 to_color_image(&img.to_rgba8())
             }),
         }
+    }
+
+    /// The image an MPRIS `mpris:artUrl` points to: a `file://` path, an `http(s)://` address
+    /// or a `data:` URI.
+    fn url_image(&self, url: &str) -> Option<DynamicImage> {
+        if let Some(path) = file_url_path(url) {
+            return load_file(&path);
+        }
+        let bytes = if url.starts_with("http://") || url.starts_with("https://") {
+            let fetched = self.http.get(url).call().and_then(|mut resp| {
+                resp.body_mut()
+                    .with_config()
+                    .limit(ART_DOWNLOAD_MAX)
+                    .read_to_vec()
+            });
+            match fetched {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    warn!("failed to fetch art from {url}: {e}");
+                    return None;
+                }
+            }
+        } else if let Some(bytes) = data_uri_bytes(url) {
+            bytes
+        } else {
+            debug!("unsupported art URL {url}");
+            return None;
+        };
+        image::load_from_memory(&bytes)
+            .map_err(|e| debug!("undecodable art from {url}: {e}"))
+            .ok()
     }
 
     fn mpc_image(&self, cmd: &str, file: &str) -> Option<DynamicImage> {
@@ -377,6 +417,18 @@ impl Worker {
                 None
             }
         }
+    }
+}
+
+/// The bytes of a `data:` URI, base64 or percent-encoded.
+fn data_uri_bytes(uri: &str) -> Option<Vec<u8>> {
+    let (meta, data) = uri.strip_prefix("data:")?.split_once(',')?;
+    if meta.ends_with(";base64") {
+        base64::engine::general_purpose::STANDARD
+            .decode(data.trim())
+            .ok()
+    } else {
+        Some(percent_decode_str(data).collect())
     }
 }
 
@@ -653,6 +705,41 @@ mod tests {
         assert_eq!(first_artist("Mariah Carey & Boyz II Men"), "mariah carey");
         assert_eq!(first_artist("NF; Hopsin"), "nf");
         assert_eq!(first_artist(""), "");
+    }
+
+    #[test]
+    fn data_uris() {
+        assert_eq!(
+            data_uri_bytes("data:image/png;base64,iVBORw0K"),
+            Some(vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a])
+        );
+        assert_eq!(
+            data_uri_bytes("data:text/plain,a%20b"),
+            Some(b"a b".to_vec())
+        );
+        assert_eq!(data_uri_bytes("data:image/png;base64,!!"), None);
+        assert_eq!(data_uri_bytes("data:no-comma"), None);
+        assert_eq!(data_uri_bytes("https://example.com/a.png"), None);
+    }
+
+    #[test]
+    fn art_key_tells_mpris_art_urls_apart() {
+        let song = |art_url: Option<&str>| SongInfo {
+            id: 1,
+            file: "https://example.com/t#A - T".into(),
+            title: "T".into(),
+            artist: "A".into(),
+            album: String::new(),
+            duration: None,
+            origin: Origin::Mpris {
+                art_url: art_url.map(str::to_owned),
+            },
+        };
+        assert_ne!(art_key(&song(None)), art_key(&song(Some("file:///c.jpg"))));
+        assert_eq!(
+            art_key(&song(Some("file:///c.jpg"))),
+            art_key(&song(Some("file:///c.jpg")))
+        );
     }
 
     #[test]

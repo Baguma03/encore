@@ -5,7 +5,7 @@ use egui::{Event, Key, ViewportCommand};
 use encore::lyrics::{Lyrics, LyricsConfig, LyricsProvider, LyricsState};
 
 use crate::art::ArtLoader;
-use crate::config::{Config, Layout, LyricsAlign, LyricsFlow};
+use crate::config::{Config, Layout, LyricsAlign, LyricsFlow, Source};
 use crate::export::{self, Aspect, ExportJob, ExportRequest, ExportStatus, Quality, Style};
 use crate::player::{Command, PlayState, Player, PlayerState, SongInfo};
 use crate::ui::export_panel::{ExportPanel, LiveLook, Marks, PanelResult};
@@ -245,11 +245,9 @@ impl App {
 
     fn open_export_panel(&mut self, song: SongInfo, next: Option<SongInfo>, elapsed: Duration) {
         let lyrics = self.song_lyrics(&song);
-        let audio_found = self
-            .config
-            .music_dir
-            .as_ref()
-            .is_some_and(|dir| dir.join(&song.file).is_file());
+        let audio_found = song
+            .local_path(self.config.music_dir.as_deref())
+            .is_some_and(|path| path.is_file());
         self.export_panel = Some(ExportPanel::new(
             song,
             next,
@@ -433,17 +431,25 @@ impl App {
             };
             ui.label(format!("Lyrics: {found}"));
 
-            ui.heading("MPD");
+            ui.heading("Player");
             ui.label(format!(
-                "{}:{} ({})",
-                self.config.mpd_host,
-                self.config.mpd_port,
-                if state.connected {
-                    "connected"
-                } else {
-                    "disconnected"
-                },
+                "Following: {}",
+                state.source.as_deref().unwrap_or("nothing")
             ));
+            ui.label(format!(
+                "Source: {:?}{}",
+                self.config.source,
+                match (&self.config.mpris_player, self.config.source) {
+                    (Some(pin), Source::Auto | Source::Mpris) => format!(", MPRIS player {pin:?}"),
+                    _ => String::new(),
+                }
+            ));
+            if self.config.source != Source::Mpris {
+                ui.label(format!(
+                    "MPD: {}:{}",
+                    self.config.mpd_host, self.config.mpd_port
+                ));
+            }
             if let Some(dir) = &self.config.music_dir {
                 ui.label(format!("Music dir: {}", dir.display()));
             }

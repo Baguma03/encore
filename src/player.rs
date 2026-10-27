@@ -1,21 +1,39 @@
+mod mpris;
+
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use encore::lyrics::SongKey;
-use log::{info, warn};
+use log::{debug, info, warn};
 use mpd::song::Song;
 use mpd::status::State;
 use mpd::Client;
 
-use crate::config::Config;
+use crate::config::{Config, Source};
+use mpris::Mpris;
+
+pub use mpris::file_url_path;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
+/// Delay between MPD connection attempts in auto mode, which polls MPRIS players meanwhile.
+const AUTO_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Where a song is played from, which decides where its cover and local files are found.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Origin {
+    /// `file` is relative to MPD's music directory, and MPD serves the cover.
+    #[default]
+    Mpd,
+    /// An MPRIS player. `file` is the track's `file://` URL for a local file, otherwise a string
+    /// unique to the track; the cover comes from the player's `mpris:artUrl`.
+    Mpris { art_url: Option<String> },
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SongInfo {
@@ -26,6 +44,7 @@ pub struct SongInfo {
     pub artist: String,
     pub album: String,
     pub duration: Option<Duration>,
+    pub origin: Origin,
 }
 
 impl SongInfo {
@@ -49,13 +68,29 @@ impl SongInfo {
             album,
             duration: song.duration,
             file: song.file,
+            origin: Origin::Mpd,
+        }
+    }
+
+    /// The song's audio file on disk: under `music_dir` for MPD, the `file://` URL's path for an
+    /// MPRIS player.
+    pub fn local_path(&self, music_dir: Option<&Path>) -> Option<PathBuf> {
+        match self.origin {
+            Origin::Mpd => music_dir.map(|dir| dir.join(&self.file)),
+            Origin::Mpris { .. } => file_url_path(&self.file),
         }
     }
 
     /// Key identifying this song to the lyrics provider.
     pub fn lyrics_key(&self) -> SongKey {
+        let file = match self.origin {
+            Origin::Mpd => self.file.clone(),
+            // An absolute path makes the lookup search next to a local file.
+            Origin::Mpris { .. } => file_url_path(&self.file)
+                .map_or_else(|| self.file.clone(), |p| p.to_string_lossy().into_owned()),
+        };
         SongKey {
-            file: self.file.clone(),
+            file,
             artist: self.artist.clone(),
             title: self.title.clone(),
             album: self.album.clone(),
@@ -80,6 +115,10 @@ pub struct PlayerState {
     pub queue_len: u32,
     pub random: bool,
     pub repeat: bool,
+    /// The player followed, such as `MPD` or `MPRIS: spotify`; `None` while there is none.
+    pub source: Option<String>,
+    /// Only MPD is followed, which changes the text shown while waiting for it.
+    mpd_only: bool,
     elapsed_at_poll: Duration,
     /// When `elapsed_at_poll` was read; `None` freezes the elapsed time.
     polled_at: Option<Instant>,
@@ -95,6 +134,8 @@ impl Default for PlayerState {
             queue_len: 0,
             random: false,
             repeat: false,
+            source: None,
+            mpd_only: false,
             elapsed_at_poll: Duration::ZERO,
             polled_at: Some(Instant::now()),
         }
@@ -111,6 +152,15 @@ impl PlayerState {
             elapsed_at_poll: elapsed,
             polled_at: None,
             ..Self::default()
+        }
+    }
+
+    /// Text shown while no player is connected.
+    pub fn waiting_text(&self) -> &'static str {
+        if self.mpd_only {
+            "Connecting to MPD…"
+        } else {
+            "Waiting for a player…"
         }
     }
 
@@ -146,7 +196,8 @@ impl PlayerState {
     fn change_key(&self) -> impl PartialEq + use<'_> {
         (
             self.connected,
-            self.current.as_ref().map(|s| s.id),
+            self.source.as_deref(),
+            self.current.as_ref().map(|s| (s.id, &s.origin)),
             self.next.as_ref().map(|s| s.id),
             self.state,
             self.queue_len,
@@ -166,7 +217,8 @@ pub enum Command {
     ToggleRepeat,
 }
 
-/// Polls MPD on a background thread and applies playback commands there.
+/// Polls MPD or an MPRIS player, as the config's source picks, on a background thread and
+/// applies playback commands there.
 pub struct Player {
     state: Arc<Mutex<PlayerState>>,
     tx: mpsc::Sender<Command>,
@@ -174,20 +226,33 @@ pub struct Player {
 
 impl Player {
     pub fn spawn(cfg: &Config, on_change: Box<dyn Fn() + Send + Sync>) -> Self {
-        let state = Arc::new(Mutex::new(PlayerState::default()));
+        let idle = PlayerState {
+            mpd_only: cfg.source == Source::Mpd,
+            ..PlayerState::default()
+        };
+        let state = Arc::new(Mutex::new(idle.clone()));
         let (tx, rx) = mpsc::channel();
+        let now = Instant::now();
         let worker = Worker {
+            source: cfg.source,
             addr: format!("{}:{}", cfg.mpd_host, cfg.mpd_port),
             password: cfg.mpd_password.clone(),
+            mpris_pin: cfg.mpris_player.clone(),
+            idle,
             state: Arc::clone(&state),
             on_change,
             client: None,
+            mpd_retry_at: now,
+            mpd_failures: 0,
+            mpris: None,
+            mpris_retry_at: now,
+            mpris_failures: 0,
         };
         let spawned = thread::Builder::new()
-            .name("mpd-poll".into())
+            .name("player-poll".into())
             .spawn(move || worker.run(rx));
         if let Err(e) = spawned {
-            warn!("failed to start MPD thread: {e}");
+            warn!("failed to start player thread: {e}");
         }
         Self { state, tx }
     }
@@ -198,7 +263,7 @@ impl Player {
 
     pub fn send(&self, cmd: Command) {
         if self.tx.send(cmd).is_err() {
-            warn!("MPD thread is gone, dropping {cmd:?}");
+            warn!("player thread is gone, dropping {cmd:?}");
         }
     }
 }
@@ -208,36 +273,30 @@ fn lock(state: &Mutex<PlayerState>) -> MutexGuard<'_, PlayerState> {
 }
 
 struct Worker {
+    source: Source,
     addr: String,
     password: Option<String>,
+    mpris_pin: Option<String>,
+    /// State published while no player is connected.
+    idle: PlayerState,
     state: Arc<Mutex<PlayerState>>,
     on_change: Box<dyn Fn() + Send + Sync>,
     client: Option<Client>,
+    mpd_retry_at: Instant,
+    /// Connection attempts that failed in a row; only the first is logged as a warning in auto
+    /// mode, where MPD may simply not be running.
+    mpd_failures: u32,
+    mpris: Option<Mpris>,
+    mpris_retry_at: Instant,
+    mpris_failures: u32,
 }
 
 impl Worker {
     fn run(mut self, rx: mpsc::Receiver<Command>) {
         loop {
-            if self.client.is_none() {
-                match self.connect() {
-                    Ok(client) => {
-                        info!("connected to MPD at {}", self.addr);
-                        self.client = Some(client);
-                    }
-                    Err(e) => {
-                        warn!("MPD connection to {} failed: {e}", self.addr);
-                        self.publish(PlayerState::default());
-                        // Commands issued while disconnected are dropped.
-                        match rx.recv_timeout(RECONNECT_INTERVAL) {
-                            Err(RecvTimeoutError::Disconnected) => return,
-                            _ => continue,
-                        }
-                    }
-                }
-            }
-
             self.poll();
 
+            // Commands issued while no player is connected are dropped.
             match rx.recv_timeout(POLL_INTERVAL) {
                 Ok(cmd) => {
                     self.apply(cmd);
@@ -247,6 +306,94 @@ impl Worker {
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    }
+
+    /// Publishes the state of MPD or the followed MPRIS player. Auto mode follows MPD whenever
+    /// it is reachable and an MPRIS player otherwise.
+    fn poll(&mut self) {
+        let state = match self.source {
+            Source::Mpd => self.poll_mpd(),
+            Source::Mpris => self.poll_mpris(),
+            Source::Auto => match self.poll_mpd() {
+                Some(state) => Some(state),
+                None => self.poll_mpris(),
+            },
+        };
+        self.publish(state.unwrap_or_else(|| self.idle.clone()));
+    }
+
+    /// MPD's state, connecting first when a connection attempt is due; `None` while MPD is
+    /// unreachable.
+    fn poll_mpd(&mut self) -> Option<PlayerState> {
+        if self.client.is_none() {
+            if Instant::now() < self.mpd_retry_at {
+                return None;
+            }
+            match self.connect() {
+                Ok(client) => {
+                    info!("connected to MPD at {}", self.addr);
+                    self.client = Some(client);
+                    self.mpd_failures = 0;
+                }
+                Err(e) => {
+                    let (interval, quiet) = match self.source {
+                        Source::Auto => (AUTO_RECONNECT_INTERVAL, self.mpd_failures > 0),
+                        _ => (RECONNECT_INTERVAL, false),
+                    };
+                    self.mpd_retry_at = Instant::now() + interval;
+                    self.mpd_failures = self.mpd_failures.saturating_add(1);
+                    if quiet {
+                        debug!("MPD connection to {} failed: {e}", self.addr);
+                    } else {
+                        warn!("MPD connection to {} failed: {e}", self.addr);
+                    }
+                    return None;
+                }
+            }
+        }
+        let client = self.client.as_mut()?;
+        match fetch(client) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                self.disconnect(&e);
+                None
+            }
+        }
+    }
+
+    /// The followed MPRIS player's state, connecting to the session bus first when needed;
+    /// `None` without a player.
+    fn poll_mpris(&mut self) -> Option<PlayerState> {
+        if self.mpris.is_none() {
+            if Instant::now() < self.mpris_retry_at {
+                return None;
+            }
+            match Mpris::connect(self.mpris_pin.as_deref()) {
+                Ok(mpris) => {
+                    debug!("connected to the D-Bus session bus");
+                    self.mpris = Some(mpris);
+                    self.mpris_failures = 0;
+                }
+                Err(e) => {
+                    self.mpris_retry_at = Instant::now() + RECONNECT_INTERVAL;
+                    if self.mpris_failures == 0 {
+                        warn!("D-Bus session bus connection for MPRIS failed: {e}");
+                    } else {
+                        debug!("D-Bus session bus connection for MPRIS failed: {e}");
+                    }
+                    self.mpris_failures = self.mpris_failures.saturating_add(1);
+                    return None;
+                }
+            }
+        }
+        match self.mpris.as_mut()?.poll() {
+            Ok(state) => state,
+            Err(e) => {
+                warn!("MPRIS error, reconnecting: {e}");
+                self.mpris = None;
+                None
             }
         }
     }
@@ -274,36 +421,29 @@ impl Worker {
         Ok(client)
     }
 
-    fn poll(&mut self) {
-        let Some(client) = self.client.as_mut() else {
-            return;
-        };
-        match fetch(client) {
-            Ok(state) => self.publish(state),
-            Err(e) => self.disconnect(&e),
-        }
-    }
-
+    /// Sends `cmd` to the player followed: MPD while connected, else the MPRIS player.
     fn apply(&mut self, cmd: Command) {
-        let (random, repeat) = {
-            let s = lock(&self.state);
-            (s.random, s.repeat)
-        };
-        let Some(client) = self.client.as_mut() else {
+        let current = lock(&self.state).clone();
+        if let Some(client) = self.client.as_mut() {
+            let result = match cmd {
+                Command::TogglePause => client.toggle_pause(),
+                Command::Next => client.next(),
+                Command::Previous => client.prev(),
+                Command::SeekTo(pos) => client.rewind(pos),
+                Command::ToggleRandom => client.random(!current.random),
+                Command::ToggleRepeat => client.repeat(!current.repeat),
+            };
+            if let Err(e) = result {
+                self.disconnect(&e);
+            }
+        } else if let Some(mpris) = &self.mpris {
+            if let Err(e) = mpris.apply(cmd, &current) {
+                warn!("MPRIS player rejected {cmd:?}: {e}");
+            }
+        } else {
             return;
-        };
-        let result = match cmd {
-            Command::TogglePause => client.toggle_pause(),
-            Command::Next => client.next(),
-            Command::Previous => client.prev(),
-            Command::SeekTo(pos) => client.rewind(pos),
-            Command::ToggleRandom => client.random(!random),
-            Command::ToggleRepeat => client.repeat(!repeat),
-        };
-        match result {
-            Ok(()) => self.poll(),
-            Err(e) => self.disconnect(&e),
         }
+        self.poll();
         // A seek changes elapsed time without touching the change key.
         (self.on_change)();
     }
@@ -311,12 +451,18 @@ impl Worker {
     fn disconnect(&mut self, err: &mpd::error::Error) {
         warn!("MPD error, reconnecting: {err}");
         self.client = None;
-        self.publish(PlayerState::default());
+        self.mpd_retry_at = Instant::now();
+        self.mpd_failures = 0;
     }
 
     fn publish(&self, new: PlayerState) {
         let changed = {
             let mut cur = lock(&self.state);
+            if new.source != cur.source {
+                if let Some(source) = &new.source {
+                    info!("following {source}");
+                }
+            }
             let changed = cur.change_key() != new.change_key();
             *cur = new;
             changed
@@ -367,6 +513,8 @@ fn fetch(client: &mut Client) -> Result<PlayerState, mpd::error::Error> {
             .elapsed
             .or(status.time.map(|t| t.0))
             .unwrap_or_default(),
+        source: Some("MPD".to_owned()),
+        mpd_only: false,
         polled_at: Some(polled_at),
     })
 }
@@ -383,6 +531,7 @@ mod tests {
             artist: String::new(),
             album: String::new(),
             duration: Some(Duration::from_secs(duration)),
+            origin: Origin::Mpd,
         }
     }
 

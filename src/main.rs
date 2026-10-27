@@ -24,7 +24,8 @@ fn main() {
     config::write_starter_config();
     let config = Config::from_env();
     info!(
-        "MPD at {}:{}, layout {:?}, lyrics {}",
+        "source {:?}, MPD at {}:{}, layout {:?}, lyrics {}",
+        config.source,
         config.mpd_host,
         config.mpd_port,
         config.layout,

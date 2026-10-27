@@ -15,7 +15,7 @@ use encore::lyrics::LyricsState;
 use log::{info, warn};
 
 use crate::config::{Config, Layout, LyricsAlign, LyricsFlow};
-use crate::player::SongInfo;
+use crate::player::{Origin, SongInfo};
 use ffmpeg::Encoder;
 pub use ffmpeg::Quality;
 use render::Renderer;
@@ -515,13 +515,13 @@ impl Worker {
         if !req.with_audio {
             return (None, None);
         }
-        let Some(dir) = &self.music_dir else {
-            return (
-                None,
-                Some("no audio: MPD music directory unknown".to_owned()),
-            );
+        let Some(path) = req.song.local_path(self.music_dir.as_deref()) else {
+            let reason = match req.song.origin {
+                Origin::Mpd => "no audio: MPD music directory unknown",
+                Origin::Mpris { .. } => "no audio: the player's track is not a local file",
+            };
+            return (None, Some(reason.to_owned()));
         };
-        let path = dir.join(&req.song.file);
         if path.is_file() {
             (Some(path), None)
         } else {
@@ -633,6 +633,7 @@ mod tests {
             artist: artist.to_owned(),
             album: String::new(),
             duration: Some(Duration::from_secs(200)),
+            origin: Origin::Mpd,
         }
     }
 
@@ -952,6 +953,7 @@ mod tests {
                 title,
                 album,
                 duration: Some(Duration::from_secs(duration)),
+                origin: Origin::Mpd,
             }
         };
         let song = lookup(&file);

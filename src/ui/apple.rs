@@ -219,7 +219,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         let text = if view.player.connected {
             "Nothing playing"
         } else {
-            "Connecting to MPD…"
+            view.player.waiting_text()
         };
         painter.text(
             screen.center(),

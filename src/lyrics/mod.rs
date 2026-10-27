@@ -15,7 +15,8 @@ const RETRY_AFTER: Duration = Duration::from_secs(60);
 /// Identifies a song for lyrics lookup.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SongKey {
-    /// MPD-relative file path.
+    /// MPD-relative file path, an absolute path for a local file played by another player, or
+    /// a URL or other identifier for a track with no local file.
     pub file: String,
     pub artist: String,
     pub title: String,
@@ -67,7 +68,8 @@ pub enum LyricsState {
 
 #[derive(Clone, Debug)]
 pub struct LyricsConfig {
-    /// MPD music root; enables sidecar `.lrc`/`.txt` lookup next to the audio file.
+    /// MPD music root; enables sidecar `.lrc`/`.txt` lookup next to MPD's audio files. Songs
+    /// with an absolute path get the lookup without it.
     pub music_dir: Option<PathBuf>,
     /// Folder of `<artist> - <title>.lrc` files.
     pub local_dir: PathBuf,

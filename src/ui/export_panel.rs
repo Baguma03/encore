@@ -1475,7 +1475,7 @@ mod snapshot {
 
     use super::*;
     use crate::export::render::Renderer;
-    use crate::player::{PlayState, PlayerState};
+    use crate::player::{Origin, PlayState, PlayerState};
     use crate::ui::toasts::{Progress, Toast, Toasts};
     use crate::ui::{apple, ArtView, View};
 
@@ -1495,6 +1495,7 @@ mod snapshot {
             artist: "Kendrick Lamar & SZA".into(),
             album: "Black Panther".into(),
             duration: Some(Duration::from_secs(232)),
+            origin: Origin::Mpd,
         };
         let lrc: String = (0..14)
             .map(|i| {

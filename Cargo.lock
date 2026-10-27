@@ -1033,6 +1033,7 @@ dependencies = [
 name = "encore"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "dirs",
  "eframe",
@@ -1041,6 +1042,7 @@ dependencies = [
  "image",
  "log",
  "mpd",
+ "percent-encoding",
  "pollster",
  "serde",
  "serde_json",
@@ -1048,6 +1050,7 @@ dependencies = [
  "toml",
  "ureq",
  "wgpu",
+ "zbus",
 ]
 
 [[package]]

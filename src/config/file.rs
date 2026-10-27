@@ -17,6 +17,14 @@ pub const STARTER: &str = r#"# Encore configuration.
 # setting here. Encore only reads this file: changes made with the keyboard while it runs are
 # not saved.
 
+# Where playback comes from: "auto" (MPD while it is reachable, otherwise a desktop media player
+# over MPRIS), "mpd" or "mpris".
+# source = "auto"
+
+# Follow only the MPRIS player whose bus name contains this text, such as "spotify" or
+# "firefox". Left unset, the playing player is followed.
+# mpris_player = "spotify"
+
 # Starting layout: "apple", "vibrant" or "spotify".
 # layout = "apple"
 
@@ -107,6 +115,12 @@ enum Kind {
 
 /// Keys of the top level and of `[mpd]`, with the variable each stands in for.
 const TOP_KEYS: &[(&str, &str, Kind)] = &[
+    (
+        "source",
+        "ENCORE_SOURCE",
+        Kind::Choice(&["auto", "mpd", "mpris"]),
+    ),
+    ("mpris_player", "ENCORE_MPRIS_PLAYER", Kind::Text),
     (
         "layout",
         "ENCORE_LAYOUT",
@@ -206,6 +220,8 @@ mod tests {
     fn full_file() {
         let values = parse(
             r#"
+            source = "MPRIS"
+            mpris_player = "spotify"
             layout = "Spotify"
             lyrics = false
             lyrics_online = false
@@ -225,6 +241,8 @@ mod tests {
             "#,
         );
         let expected: HashMap<&str, String> = [
+            ("ENCORE_SOURCE", "mpris"),
+            ("ENCORE_MPRIS_PLAYER", "spotify"),
             ("ENCORE_LAYOUT", "spotify"),
             ("ENCORE_LYRICS", "off"),
             ("ENCORE_LYRICS_ONLINE", "off"),
@@ -260,6 +278,8 @@ mod tests {
         let values = parse(
             r#"
             layout = "sideways"
+            source = "pulse"
+            mpris_player = 4
             lyrics = "maybe"
             tint = false
             lyrics_flow = 3

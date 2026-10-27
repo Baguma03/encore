@@ -107,6 +107,16 @@ impl LyricsFlow {
     }
 }
 
+/// Where playback state comes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Source {
+    /// MPD while it is reachable, otherwise an MPRIS player.
+    #[default]
+    Auto,
+    Mpd,
+    Mpris,
+}
+
 impl Config {
     /// Whether `layout` starts with the artist image as its background:
     /// `ENCORE_ARTIST_BG` or `artist_bg` when set, else only for the Spotify layout.
@@ -120,6 +130,10 @@ pub struct Config {
     pub mpd_host: String,
     pub mpd_port: u16,
     pub mpd_password: Option<String>,
+    pub source: Source,
+    /// Case-insensitive substring of the MPRIS bus name to follow, such as `spotify`; any
+    /// player when unset.
+    pub mpris_player: Option<String>,
     /// MPD music root: `MPD_MUSIC_DIR` or `[mpd] music_dir`, else `music_directory` from MPD's
     /// config file.
     pub music_dir: Option<PathBuf>,
@@ -199,6 +213,16 @@ impl Config {
             None => DEFAULT_PORT,
         };
 
+        let source = match get("ENCORE_SOURCE").map(|v| v.to_lowercase()).as_deref() {
+            Some("auto") | None => Source::Auto,
+            Some("mpd") => Source::Mpd,
+            Some("mpris") => Source::Mpris,
+            Some(other) => {
+                warn!("unknown ENCORE_SOURCE {other:?}, using auto");
+                Source::Auto
+            }
+        };
+
         let layout = match get("ENCORE_LAYOUT").map(|v| v.to_lowercase()).as_deref() {
             Some("spotify") => Layout::Spotify,
             Some("vibrant") => Layout::Vibrant,
@@ -256,6 +280,8 @@ impl Config {
             mpd_host,
             mpd_port,
             mpd_password,
+            source,
+            mpris_player: get("ENCORE_MPRIS_PLAYER"),
             music_dir,
             export_dir,
             layout,
@@ -405,6 +431,8 @@ mod tests {
         assert_eq!(cfg.mpd_host, "localhost");
         assert_eq!(cfg.mpd_port, 6600);
         assert_eq!(cfg.mpd_password, None);
+        assert_eq!(cfg.source, Source::Auto);
+        assert_eq!(cfg.mpris_player, None);
         assert_eq!(cfg.music_dir, None);
         assert_eq!(cfg.export_dir, PathBuf::from("./encore"));
         assert_eq!(cfg.layout, Layout::Apple);
@@ -476,6 +504,20 @@ mod tests {
         let from_file = Config::from_sources(layered(|_| None, &file_values), |_| None, None);
         let defaults = parse(&[]);
         assert_eq!(format!("{from_file:?}"), format!("{defaults:?}"));
+    }
+
+    #[test]
+    fn source_and_mpris_player() {
+        let source = |v| parse(&[("ENCORE_SOURCE", v)]).source;
+        assert_eq!(source("auto"), Source::Auto);
+        assert_eq!(source(" MPD "), Source::Mpd);
+        assert_eq!(source("Mpris"), Source::Mpris);
+        assert_eq!(source("pulse"), Source::Auto);
+        assert_eq!(source(""), Source::Auto);
+
+        let cfg = parse(&[("ENCORE_MPRIS_PLAYER", " spotify ")]);
+        assert_eq!(cfg.mpris_player.as_deref(), Some("spotify"));
+        assert_eq!(parse(&[("ENCORE_MPRIS_PLAYER", "  ")]).mpris_player, None);
     }
 
     #[test]

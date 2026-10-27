@@ -35,11 +35,7 @@ pub enum Lookup {
 /// Runs the lookup chain: sidecar, local folder, cache, then LRCLIB when `agent` is given
 /// and `config.online` is set. Online hits are written to the cache.
 pub fn lookup(config: &LyricsConfig, key: &SongKey, agent: Option<&ureq::Agent>) -> Lookup {
-    if let Some(l) = config
-        .music_dir
-        .as_deref()
-        .and_then(|d| sidecar(d, &key.file))
-    {
+    if let Some(l) = sidecar(config.music_dir.as_deref(), &key.file) {
         return Lookup::Found(l);
     }
     if let Some(l) = local(&config.local_dir, key) {
@@ -175,12 +171,18 @@ fn parse_file(path: &Path) -> Option<Lyrics> {
     (!lyrics.is_empty()).then_some(lyrics)
 }
 
-/// `<music_dir>/<file>.lrc`, then `.txt` as plain lyrics.
-fn sidecar(music_dir: &Path, file: &str) -> Option<Lyrics> {
+/// `<file>.lrc`, then `.txt` as plain lyrics, next to the audio file: `file` itself when it is
+/// an absolute path, else `file` under `music_dir`.
+fn sidecar(music_dir: Option<&Path>, file: &str) -> Option<Lyrics> {
     if file.is_empty() || file.contains("://") {
         return None;
     }
-    let base = music_dir.join(file);
+    let file = Path::new(file);
+    let base = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        music_dir?.join(file)
+    };
     ["lrc", "txt"]
         .iter()
         .find_map(|ext| parse_file(&base.with_extension(ext)))
@@ -587,6 +589,20 @@ pub(crate) mod tests {
         );
         let k = key("Artist/Album/03 None.mp3", "Artist", "None");
         assert_eq!(lookup(&cfg, &k, None), Lookup::NotFound);
+
+        // An absolute path is searched even without a music directory.
+        let no_music_dir = LyricsConfig {
+            music_dir: None,
+            ..cfg.clone()
+        };
+        let absolute = album.join("01 Song.flac");
+        let k = key(&absolute.to_string_lossy(), "Artist", "Song");
+        assert!(matches!(
+            lookup(&no_music_dir, &k, None),
+            Lookup::Found(Lyrics::Synced(_))
+        ));
+        let k = key("Artist/Album/01 Song.flac", "Artist", "Song");
+        assert_eq!(lookup(&no_music_dir, &k, None), Lookup::NotFound);
         let _ = fs::remove_dir_all(dir);
     }
 
