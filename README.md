@@ -81,8 +81,6 @@ Every colour keeps a minimum contrast against its backdrop, so light, dark and v
 ### Keyboard shortcuts overlay
 `?` or `h` opens a "Keyboard shortcuts" cheatsheet over a dimmed backdrop: a dark card with the keys grouped into Playback, Lyrics, Display, Export and App across three columns, each key drawn as an outlined monospace key cap beside its description, with alternative keys separated by a `/` and the keys of a combination joined by a `+`. Press `?` or `h` again, press `Esc`, click the × in the card's corner, or click outside the card to close it; the click does not toggle play/pause. Other keys keep working while it is open. While the export panel or the lyrics manager is open, `?` and `h` do nothing.
 
-On every launch a "Press ? for shortcuts" toast shows for 4.5 seconds. `ENCORE_HINT=off` (or `0`) or `hint = false` in the configuration file turns it off.
-
 ## Screenshots
 ![image](img/1.png)
 
@@ -165,7 +163,6 @@ clock = true                # date and clock overlay at startup
 export_dir = "~/Videos/encore"
 source = "auto"             # auto | mpd | mpris
 mpris_player = "spotify"    # substring of the player's bus name; unset: any player
-hint = true                 # "Press ? for shortcuts" toast at startup
 
 [mpd]
 host = "localhost"          # "password@host" for a server with a password
@@ -195,7 +192,6 @@ Environment variables override the [configuration file](#configuration-file). Th
 | `ENCORE_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable online lookups (LRCLIB and KuGou) and the lyrics manager's search. Enabled by default. |
 | `ENCORE_SOURCE` | `auto`, `mpd` or `mpris` (case-insensitive): [where playback is read from](#players). Defaults to `auto`. |
 | `ENCORE_MPRIS_PLAYER` | Case-insensitive part of an MPRIS player's name (for example `spotify`, `firefox`, `vlc` or `mpv`) to follow. Defaults to any player. |
-| `ENCORE_HINT` | Set to `0`, `off`, `false` or `no` to hide the "Press ? for shortcuts" toast at startup. Enabled by default. |
 | `ENCORE_CLOCK` | `on` or `off`: the date and clock overlay at startup (`t` toggles it). Defaults to `on`. |
 
 ## Exporting lyric clips

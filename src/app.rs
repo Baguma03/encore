@@ -23,7 +23,6 @@ const MARK_TOAST: Duration = Duration::from_secs(2);
 const SAVED_TOAST: Duration = Duration::from_secs(8);
 const FAILED_TOAST: Duration = Duration::from_secs(10);
 const CANCELLED_TOAST: Duration = Duration::from_secs(3);
-const HINT_TOAST: Duration = Duration::from_millis(4500);
 
 /// What a key press does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,10 +195,7 @@ impl App {
             Box::new(move || ctx.request_repaint()),
         );
 
-        let mut toasts = Toasts::default();
-        if config.hint {
-            toasts.push(Toast::new("Press ? for shortcuts", HINT_TOAST));
-        }
+        let toasts = Toasts::default();
 
         Self {
             layout: config.layout,

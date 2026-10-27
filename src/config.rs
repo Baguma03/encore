@@ -154,8 +154,6 @@ pub struct Config {
     pub lyrics_flow: LyricsFlow,
     /// Date and clock overlay shown at startup.
     pub clock: bool,
-    /// A toast pointing at the shortcuts overlay, shown at startup.
-    pub hint: bool,
 }
 
 impl Config {
@@ -296,7 +294,6 @@ impl Config {
             lyrics_align,
             lyrics_flow,
             clock: get("ENCORE_CLOCK").is_none_or(|v| !is_off(&v)),
-            hint: get("ENCORE_HINT").is_none_or(|v| !is_off(&v)),
         }
     }
 
@@ -447,7 +444,6 @@ mod tests {
         assert_eq!(cfg.lyrics_align, LyricsAlign::Right);
         assert_eq!(cfg.lyrics_flow, LyricsFlow::Stacked);
         assert!(cfg.clock);
-        assert!(cfg.hint);
     }
 
     #[test]
@@ -457,20 +453,12 @@ mod tests {
     }
 
     #[test]
-    fn hint_switch() {
-        assert!(!parse(&[("ENCORE_HINT", "off")]).hint);
-        assert!(!parse(&[("ENCORE_HINT", "0")]).hint);
-        assert!(parse(&[("ENCORE_HINT", "on")]).hint);
-    }
-
-    #[test]
     fn variables_override_the_config_file() {
         let file_values = file::parse(
             r#"
             layout = "vibrant"
             tint = false
             clock = false
-            hint = false
             [mpd]
             host = "file.lan"
             port = 6601
@@ -489,7 +477,6 @@ mod tests {
         assert_eq!(cfg.layout, Layout::Vibrant);
         assert!(!cfg.tint);
         assert!(!cfg.clock);
-        assert!(!cfg.hint);
         assert_eq!(cfg.mpd_host, "file.lan");
         assert_eq!(cfg.mpd_port, 6601);
         assert!(cfg.motion);

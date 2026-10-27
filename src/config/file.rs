@@ -57,9 +57,6 @@ pub const STARTER: &str = r#"# Encore configuration.
 # Date and clock overlay shown at startup.
 # clock = true
 
-# A "Press ? for shortcuts" hint shown for a few seconds at startup.
-# hint = true
-
 # Folder for exported clips. Defaults to "~/Videos/encore".
 # export_dir = "~/Videos/encore"
 
@@ -146,7 +143,6 @@ const TOP_KEYS: &[(&str, &str, Kind)] = &[
     ("tint", "ENCORE_TINT", Kind::Bool),
     ("skip_buttons", "ENCORE_SKIP_BUTTONS", Kind::Bool),
     ("clock", "ENCORE_CLOCK", Kind::Bool),
-    ("hint", "ENCORE_HINT", Kind::Bool),
     ("export_dir", "ENCORE_EXPORT_DIR", Kind::Text),
 ];
 const MPD_KEYS: &[(&str, &str, Kind)] = &[
@@ -236,7 +232,6 @@ mod tests {
             tint = false
             skip_buttons = false
             clock = false
-            hint = false
             export_dir = "~/clips"
 
             [mpd]
@@ -258,7 +253,6 @@ mod tests {
             ("ENCORE_TINT", "off"),
             ("ENCORE_SKIP_BUTTONS", "off"),
             ("ENCORE_CLOCK", "off"),
-            ("ENCORE_HINT", "off"),
             ("ENCORE_EXPORT_DIR", "~/clips"),
             ("MPD_HOST", "secret@media.lan"),
             ("MPD_PORT", "6601"),
