@@ -76,7 +76,7 @@ Every colour keeps a minimum contrast against its backdrop, so light, dark and v
 | `Esc` / `q` | Quit (`Esc` closes the shortcuts overlay first when it is open; `q` always quits) |
 
 ### Keyboard shortcuts overlay
-`?` or `h` opens an overlay titled "Keyboard shortcuts", with the keys grouped into Playback, Display, Lyrics, Export and App in two columns. Press `?` or `h` again, press `Esc`, or click anywhere to close it; the click does not toggle play/pause. Other keys keep working while it is open. While the export panel is open, `?` and `h` do nothing.
+`?` or `h` opens a "Keyboard shortcuts" cheatsheet over a dimmed backdrop: a dark card with the keys grouped into Playback, Lyrics, Display, Export and App across three columns, each key drawn as an outlined monospace key cap beside its description, with alternative keys separated by a `/`. Press `?` or `h` again, press `Esc`, click the × in the card's corner, or click outside the card to close it; the click does not toggle play/pause. Other keys keep working while it is open. While the export panel is open, `?` and `h` do nothing.
 
 On every launch a "Press ? for shortcuts" toast shows for 4.5 seconds. `ENCORE_HINT=off` (or `0`) or `hint = false` in the configuration file turns it off.
 

@@ -4,12 +4,12 @@
 use std::sync::Arc;
 
 use egui::{
-    Align2, Color32, Galley, Id, Key, Order, Painter, Pos2, Rect, Sense, Shadow, Stroke,
-    StrokeKind, Vec2,
+    Align2, Color32, CursorIcon, FontId, Galley, Id, Key, Order, Painter, Pos2, Rect, Sense,
+    Shadow, Stroke, StrokeKind, Vec2,
 };
 
+use super::font_light;
 use super::widgets::ease;
-use super::{font_bold, font_light, with_alpha};
 
 /// What triggers a shortcut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,19 +39,20 @@ impl Group {
 
     fn title(self) -> &'static str {
         match self {
-            Self::Playback => "PLAYBACK",
-            Self::Display => "DISPLAY",
-            Self::Lyrics => "LYRICS",
-            Self::Export => "EXPORT",
-            Self::App => "APP",
+            Self::Playback => "Playback",
+            Self::Display => "Display",
+            Self::Lyrics => "Lyrics",
+            Self::Export => "Export",
+            Self::App => "App",
         }
     }
 
-    /// The card column the group sits in.
+    /// The card column the group sits in, chosen so the three columns come out about as tall.
     fn column(self) -> usize {
         match self {
-            Self::Playback | Self::Display => 0,
-            Self::Lyrics | Self::Export | Self::App => 1,
+            Self::Playback | Self::Lyrics => 0,
+            Self::Display => 1,
+            Self::Export | Self::App => 2,
         }
     }
 }
@@ -133,31 +134,66 @@ fn key_name(key: Key) -> &'static str {
 }
 
 const FADE: f32 = 0.15;
-const CARD_FILL: Color32 = Color32::from_rgba_premultiplied(18, 18, 22, 235);
+const COLUMNS: usize = 3;
+const CARD_FILL: Color32 = Color32::from_rgba_premultiplied(27, 27, 29, 242);
+const BACKDROP: Color32 = Color32::from_black_alpha(200);
 
 // Sizes for a 1000 px short side; the card scales with the window.
-const PAD: f32 = 44.0;
-const CORNER: f32 = 24.0;
-const TITLE: f32 = 34.0;
-const SUBTITLE: f32 = 17.0;
-const TITLE_GAP: f32 = 8.0;
-const BODY_GAP: f32 = 22.0;
-const HEADING: f32 = 14.0;
-const HEADING_ABOVE: f32 = 20.0;
-const HEADING_BELOW: f32 = 6.0;
-const TEXT: f32 = 20.0;
-const ROW: f32 = 40.0;
-const CAP_TEXT: f32 = 16.0;
-const CAP: f32 = 30.0;
-const CAP_PAD: f32 = 10.0;
-const CAP_GAP: f32 = 6.0;
-const CAPS_TO_TEXT: f32 = 16.0;
-const COLUMN_GAP: f32 = 56.0;
+const PAD: f32 = 36.0;
+const CORNER: f32 = 18.0;
+/// Card top to the header pill.
+const PILL_TOP: f32 = 18.0;
+const PILL_TEXT: f32 = 16.0;
+const PILL_HEIGHT: f32 = 40.0;
+/// Gap between the pill's outer track and the tab inside it.
+const PILL_INSET: f32 = 4.0;
+const PILL_PAD: f32 = 14.0;
+const ICON: f32 = 17.0;
+const ICON_GAP: f32 = 8.0;
+const CLOSE: f32 = 30.0;
+/// Pill bottom to the first section heading.
+const HEADER_GAP: f32 = 22.0;
+const HEADING: f32 = 25.0;
+const HEADING_ABOVE: f32 = 16.0;
+const HEADING_BELOW: f32 = 4.0;
+const TEXT: f32 = 15.0;
+/// CircularStd sits high in its line box; this lowers descriptions onto the key caps' centre.
+const TEXT_NUDGE: f32 = 1.5;
+const ROW: f32 = 28.0;
+const CAP_TEXT: f32 = 13.0;
+const CAP: f32 = 21.0;
+const CAP_PAD: f32 = 5.0;
+const CAP_CORNER: f32 = 4.0;
+/// Space either side of the "/" between alternative keys.
+const SEP_GAP: f32 = 4.0;
+const CAPS_TO_TEXT: f32 = 24.0;
+const COLUMN_GAP: f32 = 60.0;
+const HINT: f32 = 12.0;
+const HINT_GAP: f32 = 14.0;
+/// Smallest scale before fitting, so small windows still get legible text when there is room.
+const MIN_SCALE: f32 = 0.75;
 /// Share of the window the card may cover before it shrinks to fit.
 const MAX_SHARE: f32 = 0.92;
 
+fn cap_stroke_color() -> Color32 {
+    Color32::from_gray(190)
+}
+
+fn cap_text_color() -> Color32 {
+    Color32::from_gray(228)
+}
+
+fn description_color() -> Color32 {
+    Color32::from_gray(200)
+}
+
+fn dim_color() -> Color32 {
+    Color32::from_gray(120)
+}
+
 /// Draws the overlay, fading in and out as `open` changes. While shown it takes every click so
-/// none reach the layout beneath; returns true when it was clicked.
+/// none reach the layout beneath; returns true when a click outside the card or on its close
+/// button should close it.
 pub fn draw(ctx: &egui::Context, open: bool) -> bool {
     let id = Id::unique("shortcuts-overlay");
     let t = ease(ctx.animate_bool_with_time(id, open, FADE));
@@ -171,26 +207,46 @@ pub fn draw(ctx: &egui::Context, open: bool) -> bool {
         .constrain(false)
         .interactable(open)
         .show(ctx, |ui| {
-            let response = ui.allocate_rect(screen, Sense::click());
+            let backdrop = ui.allocate_rect(screen, Sense::click());
             let mut painter = ui.painter_at(screen);
             painter.multiply_opacity(t);
-            paint(&painter, screen);
-            response.clicked()
+            let card = Card::fit(&painter, screen);
+            let rect = Rect::from_center_size(screen.center(), card.size);
+            // The card swallows its own clicks; only the backdrop and the close button close it.
+            ui.interact(rect, id.with("card"), Sense::click());
+            let close = ui
+                .interact(card.close_rect(rect), id.with("close"), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand);
+            let hover = ctx.animate_bool_with_time(id.with("close-hover"), close.hovered(), 0.1);
+            card.paint(&painter, screen, rect, hover);
+            backdrop.clicked() || close.clicked()
         })
         .inner
 }
 
+/// What sits in a row's key column: key caps with a dim separator between alternatives.
+enum Part {
+    Cap(Arc<Galley>),
+    Separator(Arc<Galley>),
+}
+
+impl Part {
+    fn width(&self, s: f32) -> f32 {
+        match self {
+            Self::Cap(galley) => (galley.size().x + 2.0 * CAP_PAD * s).max(CAP * s),
+            Self::Separator(galley) => galley.size().x + 2.0 * SEP_GAP * s,
+        }
+    }
+}
+
 enum Item {
     Heading(Arc<Galley>),
-    Row {
-        caps: Vec<Arc<Galley>>,
-        text: Arc<Galley>,
-    },
+    Row { parts: Vec<Part>, text: Arc<Galley> },
 }
 
 struct Column {
     items: Vec<Item>,
-    /// Width of the widest set of key caps; descriptions line up after it.
+    /// Width of the widest key column; descriptions line up after it.
     caps_width: f32,
     size: Vec2,
 }
@@ -199,40 +255,165 @@ struct Column {
 struct Card {
     s: f32,
     title: Arc<Galley>,
-    subtitle: Arc<Galley>,
-    columns: [Column; 2],
+    hint: Arc<Galley>,
+    columns: Vec<Column>,
     size: Vec2,
 }
 
 impl Card {
+    /// Lays the card out for the window, shrinking it when it would not fit.
+    fn fit(painter: &Painter, screen: Rect) -> Self {
+        let s = (screen.width().min(screen.height()) / 1000.0).max(MIN_SCALE);
+        let card = Self::new(painter, s);
+        let max = screen.size() * MAX_SHARE;
+        let fit = (max.x / card.size.x).min(max.y / card.size.y);
+        if fit < 1.0 {
+            Self::new(painter, s * fit)
+        } else {
+            card
+        }
+    }
+
     fn new(painter: &Painter, s: f32) -> Self {
         let title = painter.layout_no_wrap(
             "Keyboard shortcuts".into(),
-            font_bold(TITLE * s),
+            font_light(PILL_TEXT * s),
             Color32::WHITE,
         );
-        let subtitle = painter.layout_no_wrap(
+        let hint = painter.layout_no_wrap(
             "Press ? or Esc to close".into(),
-            font_light(SUBTITLE * s),
-            with_alpha(Color32::WHITE, 0.5),
+            font_light(HINT * s),
+            dim_color(),
         );
-        let columns = [0, 1].map(|i| column(painter, s, i));
+        let columns: Vec<Column> = (0..COLUMNS).map(|i| column(painter, s, i)).collect();
         let body = Vec2::new(
-            columns[0].size.x + COLUMN_GAP * s + columns[1].size.x,
-            columns[0].size.y.max(columns[1].size.y),
+            columns.iter().map(|c| c.size.x).sum::<f32>() + COLUMN_GAP * s * (COLUMNS - 1) as f32,
+            columns.iter().map(|c| c.size.y).fold(0.0, f32::max),
         );
-        let header = title.size().y + TITLE_GAP * s + subtitle.size().y + BODY_GAP * s;
-        let size = Vec2::new(
-            body.x.max(title.size().x).max(subtitle.size().x),
-            header + body.y,
-        ) + Vec2::splat(2.0 * PAD * s);
+        let pill_width = pill_width(&title, s);
+        let width = (body.x + 2.0 * PAD * s).max(pill_width + 4.0 * (CLOSE + PAD) * s);
+        let height = PILL_TOP * s
+            + PILL_HEIGHT * s
+            + HEADER_GAP * s
+            + body.y
+            + HINT_GAP * s
+            + hint.size().y
+            + PAD * s * 0.6;
         Self {
             s,
             title,
-            subtitle,
+            hint,
             columns,
-            size,
+            size: Vec2::new(width, height),
         }
+    }
+
+    fn close_rect(&self, card: Rect) -> Rect {
+        let s = self.s;
+        let center = Pos2::new(
+            card.right() - PILL_TOP * s - CLOSE * s / 2.0,
+            card.top() + PILL_TOP * s + PILL_HEIGHT * s / 2.0,
+        );
+        Rect::from_center_size(center, Vec2::splat(CLOSE * s))
+    }
+
+    fn paint(&self, painter: &Painter, screen: Rect, rect: Rect, close_hover: f32) {
+        let s = self.s;
+        painter.rect_filled(screen, 0.0, BACKDROP);
+
+        let corner = CORNER * s;
+        let shadow = Shadow {
+            offset: [0, (10.0 * s) as i8],
+            blur: (40.0 * s).min(255.0) as u8,
+            spread: 0,
+            color: Color32::from_black_alpha(120),
+        };
+        painter.add(shadow.as_shape(rect, corner));
+        painter.rect(
+            rect,
+            corner,
+            CARD_FILL,
+            Stroke::new(1.0, Color32::from_white_alpha(16)),
+            StrokeKind::Inside,
+        );
+
+        // Header: a tab track with one selected tab, as in a tabbed cheatsheet.
+        let pill = Rect::from_center_size(
+            Pos2::new(
+                rect.center().x,
+                rect.top() + (PILL_TOP + PILL_HEIGHT / 2.0) * s,
+            ),
+            Vec2::new(pill_width(&self.title, s), PILL_HEIGHT * s),
+        );
+        painter.rect_filled(pill, pill.height() / 2.0, Color32::from_white_alpha(7));
+        let tab = pill.shrink(PILL_INSET * s);
+        painter.rect_filled(tab, tab.height() / 2.0, Color32::from_white_alpha(16));
+        let icon = Rect::from_min_size(
+            Pos2::new(tab.left() + PILL_PAD * s, tab.center().y - ICON * s / 2.0),
+            Vec2::splat(ICON * s),
+        );
+        keyboard_icon(painter, icon, Color32::from_gray(225));
+        painter.galley(
+            Pos2::new(
+                icon.right() + ICON_GAP * s,
+                tab.center().y - self.title.size().y / 2.0,
+            ),
+            self.title.clone(),
+            Color32::WHITE,
+        );
+
+        let close = self.close_rect(rect);
+        if close_hover > 0.0 {
+            painter.circle_filled(
+                close.center(),
+                close.width() / 2.0,
+                Color32::from_white_alpha((22.0 * close_hover) as u8),
+            );
+        }
+        let arm = close.width() * 0.17;
+        let stroke = Stroke::new(
+            (1.6 * s).max(1.0),
+            Color32::from_gray(200).lerp_to_gamma(Color32::WHITE, close_hover),
+        );
+        let c = close.center();
+        painter.line_segment([c + Vec2::splat(-arm), c + Vec2::splat(arm)], stroke);
+        painter.line_segment([c + Vec2::new(-arm, arm), c + Vec2::new(arm, -arm)], stroke);
+
+        let top = pill.bottom() + HEADER_GAP * s;
+        let mut x = rect.left() + PAD * s;
+        let body_width = self.columns.iter().map(|c| c.size.x).sum::<f32>()
+            + COLUMN_GAP * s * (COLUMNS - 1) as f32;
+        x += ((rect.width() - 2.0 * PAD * s) - body_width).max(0.0) / 2.0;
+        for column in &self.columns {
+            paint_column(painter, column, Pos2::new(x, top), s);
+            x += column.size.x + COLUMN_GAP * s;
+        }
+
+        painter.galley(
+            Pos2::new(
+                rect.right() - PAD * s - self.hint.size().x,
+                rect.bottom() - PAD * s * 0.6 - self.hint.size().y,
+            ),
+            self.hint.clone(),
+            dim_color(),
+        );
+    }
+}
+
+fn pill_width(title: &Galley, s: f32) -> f32 {
+    2.0 * (PILL_INSET + PILL_PAD) * s + ICON * s + ICON_GAP * s + title.size().x
+}
+
+fn mono(size: f32) -> FontId {
+    FontId::monospace(size)
+}
+
+/// Monospace for key names; the arrows come from the proportional fallbacks, whose arrows are
+/// larger than the monospace face's.
+fn cap_font(input: Input, s: f32) -> FontId {
+    match input {
+        K(Key::ArrowLeft | Key::ArrowRight) => font_light(CAP_TEXT * s),
+        _ => mono(CAP_TEXT * s),
     }
 }
 
@@ -241,27 +422,31 @@ fn column(painter: &Painter, s: f32, index: usize) -> Column {
     for group in Group::ALL.into_iter().filter(|g| g.column() == index) {
         items.push(Item::Heading(painter.layout_no_wrap(
             group.title().into(),
-            font_bold(HEADING * s),
-            with_alpha(Color32::WHITE, 0.45),
+            font_light(HEADING * s),
+            Color32::WHITE,
         )));
         for shortcut in SHORTCUTS.iter().filter(|sc| sc.group == group) {
-            let caps = shortcut
-                .inputs
-                .iter()
-                .map(|&input| {
-                    painter.layout_no_wrap(
-                        label(input).into(),
-                        font_bold(CAP_TEXT * s),
-                        Color32::WHITE,
-                    )
-                })
-                .collect();
+            let mut parts = Vec::new();
+            for (i, &input) in shortcut.inputs.iter().enumerate() {
+                if i > 0 {
+                    parts.push(Part::Separator(painter.layout_no_wrap(
+                        "/".into(),
+                        mono(CAP_TEXT * s),
+                        dim_color(),
+                    )));
+                }
+                parts.push(Part::Cap(painter.layout_no_wrap(
+                    label(input).into(),
+                    cap_font(input, s),
+                    cap_text_color(),
+                )));
+            }
             let text = painter.layout_no_wrap(
                 shortcut.description.into(),
                 font_light(TEXT * s),
-                with_alpha(Color32::WHITE, 0.88),
+                description_color(),
             );
-            items.push(Item::Row { caps, text });
+            items.push(Item::Row { parts, text });
         }
     }
 
@@ -274,8 +459,8 @@ fn column(painter: &Painter, s: f32, index: usize) -> Column {
                 }
                 height += galley.size().y + HEADING_BELOW * s;
             }
-            Item::Row { caps, text } => {
-                caps_width = caps_width.max(caps_span(caps, s));
+            Item::Row { parts, text } => {
+                caps_width = caps_width.max(parts.iter().map(|p| p.width(s)).sum());
                 text_width = text_width.max(text.size().x);
                 height += ROW * s;
             }
@@ -288,69 +473,8 @@ fn column(painter: &Painter, s: f32, index: usize) -> Column {
     }
 }
 
-fn cap_width(galley: &Galley, s: f32) -> f32 {
-    (galley.size().x + 2.0 * CAP_PAD * s).max(CAP * s)
-}
-
-fn caps_span(caps: &[Arc<Galley>], s: f32) -> f32 {
-    let widths: f32 = caps.iter().map(|g| cap_width(g, s)).sum();
-    widths + CAP_GAP * s * caps.len().saturating_sub(1) as f32
-}
-
-fn paint(painter: &Painter, screen: Rect) {
-    painter.rect_filled(screen, 0.0, Color32::from_black_alpha(110));
-
-    let s = screen.width().min(screen.height()) / 1000.0;
-    let mut card = Card::new(painter, s);
-    let max = screen.size() * MAX_SHARE;
-    let fit = (max.x / card.size.x).min(max.y / card.size.y);
-    if fit < 1.0 {
-        card = Card::new(painter, s * fit);
-    }
-    let s = card.s;
-
-    let rect = Rect::from_center_size(screen.center(), card.size);
-    let corner = CORNER * s;
-    let shadow = Shadow {
-        offset: [0, (12.0 * s) as i8],
-        blur: (48.0 * s).min(255.0) as u8,
-        spread: 0,
-        color: Color32::from_black_alpha(140),
-    };
-    painter.add(shadow.as_shape(rect, corner));
-    painter.rect(
-        rect,
-        corner,
-        CARD_FILL,
-        Stroke::new(1.0, Color32::from_white_alpha(20)),
-        StrokeKind::Inside,
-    );
-
-    let inner = rect.shrink(PAD * s);
-    let mut y = inner.top();
-    painter.galley(
-        Pos2::new(inner.left(), y),
-        card.title.clone(),
-        Color32::WHITE,
-    );
-    y += card.title.size().y + TITLE_GAP * s;
-    painter.galley(
-        Pos2::new(inner.left(), y),
-        card.subtitle.clone(),
-        Color32::WHITE,
-    );
-    y += card.subtitle.size().y + BODY_GAP * s;
-
-    let mut x = inner.left();
-    for column in &card.columns {
-        paint_column(painter, column, Pos2::new(x, y), s);
-        x += column.size.x + COLUMN_GAP * s;
-    }
-}
-
 fn paint_column(painter: &Painter, column: &Column, top_left: Pos2, s: f32) {
-    let cap_fill = Color32::from_white_alpha(22);
-    let cap_stroke = Stroke::new(1.0, Color32::from_white_alpha(45));
+    let stroke = Stroke::new(s.max(1.0), cap_stroke_color());
     let mut y = top_left.y;
     for (i, item) in column.items.iter().enumerate() {
         match item {
@@ -361,28 +485,34 @@ fn paint_column(painter: &Painter, column: &Column, top_left: Pos2, s: f32) {
                 painter.galley(Pos2::new(top_left.x, y), galley.clone(), Color32::WHITE);
                 y += galley.size().y + HEADING_BELOW * s;
             }
-            Item::Row { caps, text } => {
+            Item::Row { parts, text } => {
                 let mid = y + ROW * s / 2.0;
                 let mut x = top_left.x;
-                for cap in caps {
-                    let width = cap_width(cap, s);
-                    let key = Rect::from_min_size(
+                for part in parts {
+                    let width = part.width(s);
+                    let slot = Rect::from_min_size(
                         Pos2::new(x, mid - CAP * s / 2.0),
                         Vec2::new(width, CAP * s),
                     );
-                    painter.rect(key, 7.0 * s, cap_fill, cap_stroke, StrokeKind::Inside);
+                    let galley = match part {
+                        Part::Cap(galley) => {
+                            painter.rect_stroke(slot, CAP_CORNER * s, stroke, StrokeKind::Inside);
+                            galley
+                        }
+                        Part::Separator(galley) => galley,
+                    };
                     painter.galley(
                         Align2::CENTER_CENTER
-                            .anchor_size(key.center(), cap.size())
+                            .anchor_size(slot.center(), galley.size())
                             .min,
-                        cap.clone(),
+                        galley.clone(),
                         Color32::WHITE,
                     );
-                    x += width + CAP_GAP * s;
+                    x += width;
                 }
                 let text_x = top_left.x + column.caps_width + CAPS_TO_TEXT * s;
                 painter.galley(
-                    Pos2::new(text_x, mid - text.size().y / 2.0),
+                    Pos2::new(text_x, mid - text.size().y / 2.0 + TEXT_NUDGE * s),
                     text.clone(),
                     Color32::WHITE,
                 );
@@ -390,6 +520,33 @@ fn paint_column(painter: &Painter, column: &Column, top_left: Pos2, s: f32) {
             }
         }
     }
+}
+
+/// An outlined keyboard: a rounded body with two rows of keys and a space bar, filling `rect`.
+fn keyboard_icon(painter: &Painter, rect: Rect, color: Color32) {
+    let u = rect.width() / 16.0;
+    let body = Rect::from_center_size(rect.center(), Vec2::new(15.0 * u, 11.0 * u));
+    painter.rect_stroke(
+        body,
+        2.0 * u,
+        Stroke::new(1.4 * u, color),
+        StrokeKind::Inside,
+    );
+    let key = Vec2::splat(1.6 * u);
+    for (row, y) in [-2.6, 0.0].into_iter().enumerate() {
+        let count = 4 - row;
+        let step = 2.9 * u;
+        let start = -step * (count - 1) as f32 / 2.0;
+        for i in 0..count {
+            let center = body.center() + Vec2::new(start + step * i as f32, y * u);
+            painter.rect_filled(Rect::from_center_size(center, key), 0.3 * u, color);
+        }
+    }
+    let bar = Rect::from_center_size(
+        body.center() + Vec2::new(0.0, 2.7 * u),
+        Vec2::new(6.4 * u, 1.5 * u),
+    );
+    painter.rect_filled(bar, 0.6 * u, color);
 }
 
 #[cfg(test)]
