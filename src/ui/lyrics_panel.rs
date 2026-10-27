@@ -4,15 +4,15 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui::epaint::Shadow;
 use egui::text::{CCursor, CCursorRange, LayoutJob, TextFormat, TextWrapping};
 use egui::text_edit::TextEditState;
 use egui::{
     Align, Align2, Color32, CursorIcon, Event, FontId, Frame, Galley, Id, Key, LayerId, Margin,
-    Modal, Order, Painter, Pos2, Rect, Response, ScrollArea, Sense, Stroke, StrokeKind, TextEdit,
-    Ui, Vec2,
+    Modal, Modifiers, Order, Painter, Pos2, Rect, Response, ScrollArea, Sense, Stroke, StrokeKind,
+    TextEdit, Ui, Vec2,
 };
 use encore::file_drop;
 use encore::lyrics::lrc::{format_timestamp, parse_lrc};
@@ -29,9 +29,10 @@ use super::export_panel::{
     card, chip, hit, muted, paint_nudge, pill, section_heading, switch_cell, NUDGE_SIZE,
 };
 use super::panel_theme::PanelTheme;
+use super::scheme::Ink;
 use super::shortcuts::paint_key_cap;
 use super::toasts::Toast;
-use super::widgets::{ease, lerp};
+use super::widgets::{ease, lerp, paint_icon, seek_bar, Icon};
 use super::{fmt_time, font_bold, font_light, with_alpha};
 use crate::player::{Command, SongInfo};
 
@@ -79,6 +80,18 @@ const MAX_OFFSET_MS: i64 = 60_000;
 
 /// How far ← and → seek in the sync view.
 const SEEK_STEP: Duration = Duration::from_secs(3);
+/// How far ← and → and the transport's buttons seek in the other views.
+const TRANSPORT_STEP: Duration = Duration::from_secs(5);
+/// Seeks stop this far before the end of the song: reaching the end finishes it, the player
+/// moves on to the next song and the panel follows, clearing the editor.
+const END_GUARD: Duration = Duration::from_secs(1);
+/// A seek shows its target until the player reports a position this close to it, or for at
+/// most `SEEK_HOLD`.
+const SEEK_SETTLE: Duration = Duration::from_millis(400);
+const SEEK_HOLD: Duration = Duration::from_secs(1);
+const TRANSPORT_HEIGHT: f32 = 32.0;
+/// Thickness of the transport's seek bar, which thickens on hover.
+const TRANSPORT_TRACK: f32 = 4.0;
 /// Clicking a line's time plays from this long before the line, to hear the lead-in.
 const LEAD_IN: Duration = Duration::from_secs(1);
 /// Step of a line's ± nudges, in milliseconds.
@@ -87,7 +100,7 @@ const SYNC_ROW: f32 = 38.0;
 /// Width of a sync row's time column.
 const TIME_COLUMN: f32 = 96.0;
 /// Room above and below the sync view's list for its other parts.
-const SYNC_CHROME: f32 = 360.0;
+const SYNC_CHROME: f32 = 404.0;
 const MIN_SYNC_LIST: f32 = 160.0;
 const MAX_SYNC_LIST: f32 = 640.0;
 /// Shown in place of a line's time while it has none.
@@ -372,14 +385,68 @@ pub fn sync_key(key: Key) -> Option<SyncKey> {
     })
 }
 
-/// The position ← or → seeks to from `elapsed`, within the song.
-pub fn seek_target(elapsed: Duration, forward: bool, duration: Option<Duration>) -> Duration {
-    if forward {
-        let to = elapsed + SEEK_STEP;
-        duration.map_or(to, |d| to.min(d))
-    } else {
-        elapsed.saturating_sub(SEEK_STEP)
+/// What a playback key does outside the sync view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaybackKey {
+    SeekBack,
+    SeekForward,
+    TogglePause,
+}
+
+/// The playback keys of the editor and timing views: ←, → and P on their own while no text
+/// field has the keyboard (`typing`), and with Alt at any time, which leaves the keys to the
+/// text field's cursor and typing.
+pub fn playback_key(key: Key, modifiers: Modifiers, typing: bool) -> Option<PlaybackKey> {
+    if modifiers.ctrl || modifiers.command || modifiers.shift || (typing && !modifiers.alt) {
+        return None;
     }
+    Some(match key {
+        Key::ArrowLeft => PlaybackKey::SeekBack,
+        Key::ArrowRight => PlaybackKey::SeekForward,
+        Key::P => PlaybackKey::TogglePause,
+        _ => return None,
+    })
+}
+
+/// `to` kept within the song: from its start to `END_GUARD` before its end.
+pub fn clamp_seek(to: Duration, duration: Option<Duration>) -> Duration {
+    match duration {
+        Some(d) => to.min(d.saturating_sub(END_GUARD)),
+        None => to,
+    }
+}
+
+/// The position a `step` back or forward from `elapsed` seeks to, within the song. A step
+/// forward never goes back, even within `END_GUARD` of the end.
+pub fn seek_target(
+    elapsed: Duration,
+    step: Duration,
+    forward: bool,
+    duration: Option<Duration>,
+) -> Duration {
+    if forward {
+        clamp_seek(elapsed + step, duration).max(elapsed)
+    } else {
+        elapsed.saturating_sub(step)
+    }
+}
+
+/// The position to show while a seek to `to`, asked for `since` ago, is on its way to the
+/// player, or None once the player reports `elapsed` near it or the seek is too old to wait for.
+pub fn pending_position(
+    elapsed: Duration,
+    playing: bool,
+    to: Duration,
+    since: Duration,
+) -> Option<Duration> {
+    let expected = if playing { to + since } else { to };
+    (since < SEEK_HOLD && elapsed.abs_diff(expected) >= SEEK_SETTLE).then_some(expected)
+}
+
+/// A playback position as `m:ss.xx`, the transport's elapsed time.
+pub fn fmt_clock(position: Duration) -> String {
+    let cs = (position.as_millis() + 5) / 10;
+    format!("{}:{:02}.{:02}", cs / 6000, cs / 100 % 60, cs % 100)
 }
 
 /// A playback position as a stamp would read: `mm:ss.xx`.
@@ -535,7 +602,7 @@ pub struct Env<'a> {
 pub struct Output {
     pub close: bool,
     pub toasts: Vec<Toast>,
-    /// Playback commands from the sync view.
+    /// Playback commands from the transport, the playback keys and the sync view.
     pub commands: Vec<Command>,
 }
 
@@ -557,6 +624,8 @@ pub struct LyricsPanel {
     theme: PanelTheme,
     /// The sync view's stamped lines at their song positions, for the layout behind the panel.
     preview: Option<Arc<Lyrics>>,
+    /// The latest seek the panel asked for and when, until the player reports it.
+    seek: Option<(Duration, Instant)>,
 }
 
 impl LyricsPanel {
@@ -572,6 +641,7 @@ impl LyricsPanel {
             repaint,
             theme: PanelTheme::PLAIN,
             preview: None,
+            seek: None,
         }
     }
 
@@ -611,10 +681,106 @@ impl LyricsPanel {
         };
         self.draft
             .refresh_current(shown.info.as_ref().map(|i| &*i.text));
-        self.sync_keys(ctx, env, &shown, &mut out);
-        theme.scope(ctx, || self.show_modal(ctx, env, &shown, &mut out));
+        // The keys and the views work from the position a seek asked for until the player
+        // reports it, so steps chain and the readouts move at once.
+        let live = Env {
+            elapsed: self.position(env),
+            ..*env
+        };
+        self.sync_keys(ctx, &live, &shown, &mut out);
+        self.playback_keys(ctx, &live, &mut out);
+        self.note_seeks(&out.commands);
+        let live = Env {
+            elapsed: self.position(env),
+            ..*env
+        };
+        let sent = out.commands.len();
+        theme.scope(ctx, || self.show_modal(ctx, &live, &shown, &mut out));
+        self.note_seeks(&out.commands[sent..]);
         self.update_preview(&shown);
         out
+    }
+
+    /// The playback position to show: the latest seek's target while it is on its way to the
+    /// player, else the player's.
+    fn position(&mut self, env: &Env<'_>) -> Option<Duration> {
+        let elapsed = env.elapsed?;
+        let pending = self
+            .seek
+            .and_then(|(to, at)| pending_position(elapsed, env.playing, to, at.elapsed()));
+        if pending.is_none() {
+            self.seek = None;
+        }
+        Some(pending.unwrap_or(elapsed))
+    }
+
+    fn note_seeks(&mut self, commands: &[Command]) {
+        let last = commands.iter().rev().find_map(|c| match c {
+            Command::SeekTo(to) => Some(*to),
+            _ => None,
+        });
+        if let Some(to) = last {
+            self.seek = Some((to, Instant::now()));
+        }
+    }
+
+    /// Takes the playback keys of the editor and timing views out of this frame's input, so
+    /// neither the text fields nor the app see them, and acts on them. Alt+P also takes the
+    /// character it types.
+    fn playback_keys(&mut self, ctx: &egui::Context, env: &Env<'_>, out: &mut Output) {
+        if self.draft.is_syncing() {
+            return;
+        }
+        let typing = ctx.text_edit_focused();
+        let keys: Vec<PlaybackKey> = ctx.input_mut(|i| {
+            let mut keys = Vec::new();
+            let mut alt_text = false;
+            i.events.retain(|e| match e {
+                Event::Key {
+                    key,
+                    pressed,
+                    repeat,
+                    modifiers,
+                    ..
+                } => {
+                    let Some(action) = playback_key(*key, *modifiers, typing) else {
+                        return true;
+                    };
+                    if *pressed {
+                        alt_text = modifiers.alt;
+                        if !*repeat {
+                            keys.push(action);
+                        }
+                    }
+                    false
+                }
+                Event::Text(_) if alt_text => {
+                    alt_text = false;
+                    false
+                }
+                _ => true,
+            });
+            keys
+        });
+        for key in keys {
+            self.playback(key, env, TRANSPORT_STEP, out);
+        }
+    }
+
+    /// Seeks `step` back or forward, or plays or pauses, while the panel's song is playing.
+    fn playback(&self, key: PlaybackKey, env: &Env<'_>, step: Duration, out: &mut Output) {
+        let Some(elapsed) = env.elapsed else {
+            return;
+        };
+        out.commands.push(match key {
+            PlaybackKey::SeekBack | PlaybackKey::SeekForward => Command::SeekTo(seek_target(
+                elapsed,
+                step,
+                key == PlaybackKey::SeekForward,
+                self.draft.song.duration,
+            )),
+            PlaybackKey::TogglePause => Command::TogglePause,
+        });
     }
 
     /// The clock of the sync view's document for this song.
@@ -681,7 +847,16 @@ impl LyricsPanel {
         let Some(clock) = self.sync_clock(shown) else {
             return;
         };
-        let duration = self.draft.song.duration;
+        let playback = match key {
+            SyncKey::SeekBack => Some(PlaybackKey::SeekBack),
+            SyncKey::SeekForward => Some(PlaybackKey::SeekForward),
+            SyncKey::TogglePause => Some(PlaybackKey::TogglePause),
+            _ => None,
+        };
+        if let Some(key) = playback {
+            self.playback(key, env, SEEK_STEP, out);
+            return;
+        }
         let Some(sync) = self.draft.sync.as_mut() else {
             return;
         };
@@ -705,17 +880,7 @@ impl LyricsPanel {
                     sync.scroll = true;
                 }
             }
-            SyncKey::SeekBack | SyncKey::SeekForward => {
-                if let Some(e) = env.elapsed {
-                    let to = seek_target(e, key == SyncKey::SeekForward, duration);
-                    out.commands.push(Command::SeekTo(to));
-                }
-            }
-            SyncKey::TogglePause => {
-                if env.elapsed.is_some() {
-                    out.commands.push(Command::TogglePause);
-                }
-            }
+            SyncKey::SeekBack | SyncKey::SeekForward | SyncKey::TogglePause => {}
             SyncKey::Cancel => self.draft.cancel_sync(),
         }
     }
@@ -861,6 +1026,10 @@ impl LyricsPanel {
                 });
             });
         }
+        ui.add_space(CARD_GAP);
+        transport(ui, &self.theme, env, self.draft.song.duration, false, out);
+        ui.add_space(CARD_GAP);
+        key_hints(ui, &self.theme, PLAYBACK_HINTS);
         ui.add_space(CARD_GAP);
         self.footer(ui, env, out);
     }
@@ -1437,11 +1606,13 @@ impl LyricsPanel {
         };
         self.header(ui, out);
         ui.add_space(16.0);
-        self.sync_controls(ui, env, clock, out);
+        self.sync_controls(ui, env, clock);
         ui.add_space(CARD_GAP);
         self.sync_list(ui, env, clock, list_height, out);
         ui.add_space(CARD_GAP);
-        key_hints(ui, &t);
+        transport(ui, &t, env, self.draft.song.duration, true, out);
+        ui.add_space(CARD_GAP);
+        key_hints(ui, &t, SYNC_HINTS);
         ui.add_space(CARD_GAP);
         let Some(sync) = &self.draft.sync else {
             return;
@@ -1497,8 +1668,8 @@ impl LyricsPanel {
         }
     }
 
-    /// The playback position, how many lines have times, and the play, gap and clear buttons.
-    fn sync_controls(&mut self, ui: &mut Ui, env: &Env<'_>, clock: Clock, out: &mut Output) {
+    /// The playback position, how many lines have times, and the gap and clear buttons.
+    fn sync_controls(&mut self, ui: &mut Ui, env: &Env<'_>, clock: Clock) {
         let t = self.theme;
         let Some(sync) = self.draft.sync.as_mut() else {
             return;
@@ -1541,13 +1712,6 @@ impl LyricsPanel {
                     if let (true, Some(e)) = (gap.clicked(), env.elapsed) {
                         sync.session.gap(clock.file_time(e));
                         sync.scroll = true;
-                    }
-                    let label = if env.playing { "Pause" } else { "Play" };
-                    if chip(ui, &t, label, env.playing, playing)
-                        .on_hover_text("P")
-                        .clicked()
-                    {
-                        out.commands.push(Command::TogglePause);
                     }
                 });
             });
@@ -1611,10 +1775,7 @@ impl LyricsPanel {
                         RowAction::Seek => {
                             if let Some(time) = sync.session.doc.lines[i].time {
                                 let at = clock.song_time(time).saturating_sub(LEAD_IN);
-                                out.commands.push(Command::SeekTo(match duration {
-                                    Some(d) => at.min(d),
-                                    None => at,
-                                }));
+                                out.commands.push(Command::SeekTo(clamp_seek(at, duration)));
                             }
                         }
                         RowAction::Nudge(ms) => sync.session.doc.nudge(i, ms),
@@ -1724,6 +1885,10 @@ impl LyricsPanel {
             }
         }
         ui.add_space(CARD_GAP);
+        transport(ui, &t, env, self.draft.song.duration, false, out);
+        ui.add_space(CARD_GAP);
+        key_hints(ui, &t, PLAYBACK_HINTS);
+        ui.add_space(CARD_GAP);
         ui.horizontal(|ui| {
             ui.set_height(super::export_panel::PILL_HEIGHT);
             if let Some(error) = &self.draft.error {
@@ -1831,6 +1996,159 @@ fn live_lines(ui: &mut Ui, t: &PanelTheme, state: &LyricsState, elapsed: Option<
             color,
         );
     }
+}
+
+/// Play/pause, a step back and forward, and a seek bar between the playback position and the
+/// song's length, for the panel's song while it is playing. The steps are the sync view's
+/// (`sync`) or the other views' and seek like their ← and → keys.
+fn transport(
+    ui: &mut Ui,
+    t: &PanelTheme,
+    env: &Env<'_>,
+    duration: Option<Duration>,
+    sync: bool,
+    out: &mut Output,
+) {
+    let live = env.elapsed.is_some();
+    let step = if sync { SEEK_STEP } else { TRANSPORT_STEP };
+    let keys = |key: &str| {
+        if sync {
+            format!("({key})")
+        } else {
+            format!("({key}, or Alt+{key} in a text field)")
+        }
+    };
+    ui.horizontal(|ui| {
+        ui.set_height(TRANSPORT_HEIGHT);
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (rect, response) = hit(ui, Vec2::splat(TRANSPORT_HEIGHT), live);
+        paint_play_button(ui, t, rect, &response, env.playing, live);
+        let label = if env.playing { "Pause" } else { "Play" };
+        if response
+            .on_hover_text(format!("{label} {}", keys("P")))
+            .clicked()
+        {
+            out.commands.push(Command::TogglePause);
+        }
+        let secs = step.as_secs();
+        for (forward, text, key) in [(false, "−", "←"), (true, "+", "→")] {
+            let what = if forward { "Forward" } else { "Back" };
+            let response = chip(ui, t, &format!("{text}{secs} s"), false, live)
+                .on_hover_text(format!("{what} {secs} seconds {}", keys(key)));
+            if let (true, Some(e)) = (response.clicked(), env.elapsed) {
+                out.commands
+                    .push(Command::SeekTo(seek_target(e, step, forward, duration)));
+            }
+        }
+        ui.add_space(8.0);
+
+        // The times' places are taken first and painted after the bar, which decides the
+        // position they show while it is dragged.
+        let font = FontId::monospace(13.5);
+        let painter = ui.painter();
+        let measure = |text: &str| {
+            painter
+                .layout_no_wrap(text.to_owned(), font.clone(), t.heading)
+                .size()
+                .x
+        };
+        let total = duration.map_or_else(|| "-:--".to_owned(), fmt_time);
+        let elapsed_width = measure("00:00.00");
+        let total_width = measure(&total);
+        let (elapsed_rect, _) =
+            ui.allocate_exact_size(Vec2::new(elapsed_width, TRANSPORT_HEIGHT), Sense::hover());
+        ui.add_space(8.0);
+        let bar_width = (ui.available_width() - total_width - 8.0 - 2.0 * 6.0).max(40.0);
+        let (bar_rect, _) =
+            ui.allocate_exact_size(Vec2::new(bar_width, TRANSPORT_HEIGHT), Sense::hover());
+        ui.add_space(8.0);
+        let (total_rect, _) =
+            ui.allocate_exact_size(Vec2::new(total_width, TRANSPORT_HEIGHT), Sense::hover());
+
+        let length = duration.filter(|d| !d.is_zero());
+        let progress = match (env.elapsed, length) {
+            (Some(e), Some(d)) => (e.as_secs_f32() / d.as_secs_f32()).clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        let track = Rect::from_center_size(
+            bar_rect.center(),
+            Vec2::new(bar_rect.width(), TRANSPORT_TRACK),
+        );
+        let ink = Ink {
+            text: t.accent,
+            soft: t.body,
+            track: t.layer(30),
+        };
+        let bar = seek_bar(
+            ui,
+            Id::unique("lyrics-transport-seek"),
+            track,
+            progress,
+            live && length.is_some(),
+            &ink,
+        );
+        let target = |fraction: f32| length.map(|d| clamp_seek(d.mul_f32(fraction), duration));
+        if let Some(to) = bar.seek.and_then(target) {
+            out.commands.push(Command::SeekTo(to));
+        }
+        let (shown, color) = if bar.scrubbing {
+            (target(bar.shown), t.accent)
+        } else {
+            (env.elapsed, t.heading)
+        };
+        let painter = ui.painter();
+        let (text, color) = match shown {
+            Some(e) => (fmt_clock(e), color),
+            None => ("-:--.--".to_owned(), with_alpha(t.heading, 0.35)),
+        };
+        painter.text(
+            elapsed_rect.right_center(),
+            Align2::RIGHT_CENTER,
+            text,
+            font.clone(),
+            color,
+        );
+        painter.text(
+            total_rect.left_center(),
+            Align2::LEFT_CENTER,
+            total,
+            font,
+            with_alpha(t.heading, 0.55),
+        );
+    });
+}
+
+/// The transport's play/pause button: an accent disc with the icon of what it does.
+fn paint_play_button(
+    ui: &Ui,
+    t: &PanelTheme,
+    rect: Rect,
+    response: &Response,
+    playing: bool,
+    enabled: bool,
+) {
+    let mut painter = ui.painter().clone();
+    if !enabled {
+        painter.multiply_opacity(0.35);
+    }
+    let hovered = enabled && response.hovered();
+    let pressed = enabled && response.is_pointer_button_down_on();
+    let r = rect.width() / 2.0 * if pressed { 0.92 } else { 1.0 };
+    painter.circle_filled(
+        rect.center(),
+        r,
+        with_alpha(t.accent, if hovered { 1.0 } else { 0.9 }),
+    );
+    let icon = if playing { Icon::Pause } else { Icon::Play };
+    // The play triangle sits a little right of centre to look centred.
+    let nudge = if playing { 0.0 } else { 1.0 };
+    paint_icon(
+        &painter,
+        icon,
+        rect.center() + Vec2::new(nudge, 0.0),
+        r * 0.85,
+        t.on_accent,
+    );
 }
 
 /// The playback position as `mm:ss.xx` in monospace, or blanks when the song isn't playing.
@@ -2030,23 +2348,35 @@ fn sync_row(
     (rect, action)
 }
 
-/// The sync view's keys as outlined key caps with what they do.
-fn key_hints(ui: &mut Ui, t: &PanelTheme) {
-    const HINTS: [(&[&str], &str); 6] = [
-        (&["Space"], "stamp"),
-        (&["Bksp"], "back"),
-        (&["←", "→"], "3 s"),
-        (&["P"], "play/pause"),
-        (&["G"], "gap"),
-        (&["Esc"], "cancel"),
-    ];
+/// Key caps and what they do, for [`key_hints`].
+type Hints = [(&'static [&'static str], &'static str)];
+
+/// The sync view's keys.
+const SYNC_HINTS: &Hints = &[
+    (&["Space"], "stamp"),
+    (&["Bksp"], "back"),
+    (&["←", "→"], "3 s"),
+    (&["P"], "play/pause"),
+    (&["G"], "gap"),
+    (&["Esc"], "cancel"),
+];
+
+/// The playback keys of the editor and timing views.
+const PLAYBACK_HINTS: &Hints = &[
+    (&["←", "→"], "5 s"),
+    (&["P"], "play/pause"),
+    (&["Alt"], "with them in a text field"),
+];
+
+/// A centred row of outlined key caps with what they do.
+fn key_hints(ui: &mut Ui, t: &PanelTheme, hints: &Hints) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::hover());
     let painter = ui.painter();
     // Laid out once to centre the row.
     let measure = |painter: &Painter| {
         let mut x = 0.0;
-        for (i, (caps, label)) in HINTS.iter().enumerate() {
+        for (i, (caps, label)) in hints.iter().enumerate() {
             if i > 0 {
                 x += 18.0;
             }
@@ -2064,7 +2394,7 @@ fn key_hints(ui: &mut Ui, t: &PanelTheme) {
     let total = measure(painter);
     let mut x = rect.center().x - total / 2.0;
     let mid = rect.center().y;
-    for (i, (caps, label)) in HINTS.iter().enumerate() {
+    for (i, (caps, label)) in hints.iter().enumerate() {
         if i > 0 {
             x += 18.0;
         }
@@ -2704,12 +3034,104 @@ mod tests {
         assert_eq!(sync_key(Key::Escape), Some(SyncKey::Cancel));
         assert_eq!(sync_key(Key::Y), None);
         let s = Duration::from_secs;
-        assert_eq!(seek_target(s(10), false, None), s(7));
-        assert_eq!(seek_target(s(1), false, None), s(0));
-        assert_eq!(seek_target(s(10), true, Some(s(200))), s(13));
-        assert_eq!(seek_target(s(199), true, Some(s(200))), s(200));
+        let step = SEEK_STEP;
+        assert_eq!(seek_target(s(10), step, false, None), s(7));
+        assert_eq!(seek_target(s(1), step, false, None), s(0));
+        assert_eq!(seek_target(s(10), step, true, Some(s(200))), s(13));
+        assert_eq!(seek_target(s(10), TRANSPORT_STEP, true, None), s(15));
+        assert_eq!(seek_target(s(10), TRANSPORT_STEP, false, None), s(5));
         assert_eq!(fmt_position(Duration::from_millis(62_345)), "01:02.35");
         assert_eq!(fmt_position(Duration::from_millis(62_344)), "01:02.34");
+    }
+
+    #[test]
+    fn seeks_stay_within_the_song() {
+        let s = Duration::from_secs;
+        let ms = Duration::from_millis;
+        // Forward stops short of the end, which would finish the song.
+        assert_eq!(
+            seek_target(s(197), TRANSPORT_STEP, true, Some(s(200))),
+            s(199)
+        );
+        // Within the guard a step forward stays put rather than going back.
+        assert_eq!(
+            seek_target(ms(199_500), TRANSPORT_STEP, true, Some(s(200))),
+            ms(199_500)
+        );
+        assert_eq!(seek_target(s(2), TRANSPORT_STEP, false, Some(s(200))), s(0));
+        assert_eq!(clamp_seek(s(200), Some(s(200))), s(199));
+        assert_eq!(clamp_seek(s(50), Some(s(200))), s(50));
+        assert_eq!(clamp_seek(s(500), None), s(500));
+        assert_eq!(clamp_seek(s(5), Some(ms(500))), s(0));
+    }
+
+    #[test]
+    fn seeks_show_their_target_until_the_player_reports_it() {
+        let ms = Duration::from_millis;
+        // Paused: the target until the player is there.
+        assert_eq!(
+            pending_position(ms(10_000), false, ms(30_000), ms(50)),
+            Some(ms(30_000))
+        );
+        assert_eq!(
+            pending_position(ms(30_000), false, ms(30_000), ms(50)),
+            None
+        );
+        // Playing: the target moves on with time.
+        assert_eq!(
+            pending_position(ms(10_000), true, ms(30_000), ms(200)),
+            Some(ms(30_200))
+        );
+        assert_eq!(
+            pending_position(ms(30_150), true, ms(30_000), ms(200)),
+            None
+        );
+        // A seek the player never reports is let go.
+        assert_eq!(
+            pending_position(ms(10_000), false, ms(30_000), ms(1_500)),
+            None
+        );
+        assert_eq!(fmt_clock(ms(62_345)), "1:02.35");
+        assert_eq!(fmt_clock(ms(5_004)), "0:05.00");
+        assert_eq!(fmt_clock(ms(600_000)), "10:00.00");
+    }
+
+    #[test]
+    fn playback_keys_by_view() {
+        use PlaybackKey::*;
+        let none = Modifiers::NONE;
+        let alt = Modifiers::ALT;
+        for typing in [false, true] {
+            // Alt works whether or not a text field has the keyboard.
+            assert_eq!(playback_key(Key::ArrowLeft, alt, typing), Some(SeekBack));
+            assert_eq!(
+                playback_key(Key::ArrowRight, alt, typing),
+                Some(SeekForward)
+            );
+            assert_eq!(playback_key(Key::P, alt, typing), Some(TogglePause));
+            // Other combinations are left alone: Shift selects, Ctrl moves by word.
+            for m in [Modifiers::SHIFT, Modifiers::CTRL, Modifiers::COMMAND] {
+                assert_eq!(playback_key(Key::ArrowLeft, m, typing), None, "{m:?}");
+                assert_eq!(playback_key(Key::P, m, typing), None, "{m:?}");
+            }
+            assert_eq!(playback_key(Key::Y, alt, typing), None);
+            assert_eq!(playback_key(Key::Space, none, typing), None);
+        }
+        // Without Alt they act only while no text field has the keyboard.
+        assert_eq!(playback_key(Key::ArrowLeft, none, false), Some(SeekBack));
+        assert_eq!(
+            playback_key(Key::ArrowRight, none, false),
+            Some(SeekForward)
+        );
+        assert_eq!(playback_key(Key::P, none, false), Some(TogglePause));
+        for key in [Key::ArrowLeft, Key::ArrowRight, Key::P] {
+            assert_eq!(playback_key(key, none, true), None, "{key:?}");
+        }
+        // The sync view has its own keys and steps.
+        assert_eq!(sync_key(Key::ArrowLeft), Some(SyncKey::SeekBack));
+        assert_eq!(sync_key(Key::ArrowRight), Some(SyncKey::SeekForward));
+        assert_eq!(sync_key(Key::P), Some(SyncKey::TogglePause));
+        assert!(SEEK_STEP < TRANSPORT_STEP);
     }
 
     #[test]

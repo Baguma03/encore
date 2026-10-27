@@ -87,8 +87,9 @@ struct Open {
 /// manager, `y` alone toggles the lyrics. While a text field has the keyboard no key acts, so
 /// typing never triggers a shortcut; Escape then only leaves the field. While the lyrics
 /// manager or the export panel is open only closing it and fullscreen work, so keys meant for
-/// the panel never reach playback; in the lyrics manager's sync view Escape is left to the view,
-/// which goes back to the editor. While the shortcuts overlay is open Escape closes it instead
+/// the panel never reach playback; the lyrics manager takes ←, → and P (and Alt with them)
+/// for its own seeking and play/pause, and in its sync view Escape is left to the view, which
+/// goes back to the editor. While the shortcuts overlay is open Escape closes it instead
 /// of quitting.
 fn key_action(press: Press, open: Open) -> Option<Action> {
     let Press { key, shift } = press;
@@ -813,6 +814,38 @@ mod tests {
             assert_eq!(act(key, typing), None, "{key:?}");
         }
         assert_eq!(key_action(Press::shift(Key::Y), typing), None);
+    }
+
+    #[test]
+    fn lyrics_manager_takes_its_playback_keys() {
+        use egui::Modifiers;
+        use lyrics_panel::{playback_key, PlaybackKey};
+        let typing = Open {
+            typing: true,
+            ..LYRICS
+        };
+        // Neither the app's previous / next track nor its play / pause act while the panel is
+        // open; the panel seeks and plays or pauses instead.
+        for key in [Key::ArrowLeft, Key::ArrowRight, Key::P] {
+            assert_eq!(act(key, LYRICS), None, "{key:?}");
+            assert_eq!(act(key, typing), None, "{key:?}");
+            assert!(
+                playback_key(key, Modifiers::NONE, false).is_some(),
+                "{key:?}"
+            );
+            assert!(playback_key(key, Modifiers::ALT, true).is_some(), "{key:?}");
+            assert_eq!(playback_key(key, Modifiers::NONE, true), None, "{key:?}");
+        }
+        assert_eq!(
+            playback_key(Key::P, Modifiers::NONE, false),
+            Some(PlaybackKey::TogglePause)
+        );
+        assert_eq!(act(Key::Escape, LYRICS), Some(Action::CloseLyricsPanel));
+        assert_eq!(act(Key::F11, LYRICS), Some(Action::Fullscreen));
+        assert_eq!(
+            key_action(Press::shift(Key::Y), LYRICS),
+            Some(Action::CloseLyricsPanel)
+        );
     }
 
     #[test]

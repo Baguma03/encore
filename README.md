@@ -293,6 +293,17 @@ Synced lyrics use the standard LRC format (`[mm:ss.xx] line`), and the `[offset:
 ### Lyrics manager
 `Shift`+`y` opens the lyrics manager for the current song, a panel in the same style and album colours as the export panel; `Shift`+`y` again, `Esc`, the × in its corner or **Cancel** closes it without saving. While a text field has the keyboard no shortcut works, and `Esc` first leaves the field; in the sync view `Esc` goes back to the editor instead. If the song changes while it is open, it switches to the new song and clears the search.
 
+Every view of the manager has a transport row above its buttons, for moving through the song while working on its lyrics: a play/pause button, buttons that seek 5 seconds back and forward (3 seconds in the sync view, like its arrow keys), and a seek bar between the playback position (`m:ss.xx`) and the song's length. Clicking the bar seeks there; dragging it shows the position under the pointer and seeks on release. Seeks work while paused, stop 1 second short of the end (reaching the end would finish the song and move on to the next one), and the position, the editor's readout and the lyrics behind the panel follow at once. The controls work while the song the manager is open for is the one playing. Below the row, key caps list its keys:
+
+| Key | Action |
+| --- | --- |
+| `←` / `→` | Seek 5 seconds back / forward, while no text field has the keyboard |
+| `p` | Play/pause, while no text field has the keyboard |
+| `Alt`+`←` / `Alt`+`→` | Seek 5 seconds back / forward, also while typing in the search field or the editor |
+| `Alt`+`p` | Play/pause, also while typing |
+
+The manager takes these keys for itself, so the text fields neither move the cursor nor type a character for them, and the app's previous / next track and play/pause shortcuts don't act while it is open.
+
 - **Current lyrics**: the card at the top shows the lyrics on the display and where they came from, such as "Synced (Cache (LRCLIB))" or "Plain (Manual)", with the timing offset when one is set. Its buttons copy the lyrics to the clipboard, open the timing view, and, for saved manual lyrics, remove them after a confirmation, which looks the song up again.
 - **Search**: the field searches LRCLIB and KuGou for its text; left empty it searches for the song's own title and artist. The arrow beside it fills in "Artist - Title". `Enter` or **Search** starts a search. Results are ranked by how well their title and artist match (title words weigh more than the artist, and instrumental or karaoke versions rank lower), then synced before plain, then by the closest length, and identical lyrics are listed once. Each result shows its provider, whether it is synced, its title and artist, its length with the difference from the song's, and whether it is a sure, good or weak match, with its first lines. Providers that fail are noted above the results. Searching needs online lyrics (`lyrics_online`).
 - **Add LRC file**: picks a `.lrc` or `.txt` file in the system's file dialog, through the XDG Desktop Portal, with `zenity` or `kdialog` as a fallback when no portal answers. Files can also be dropped anywhere on the window while the manager is open. The file is listed as "File: <name>".
@@ -312,8 +323,8 @@ The sync view times the editor's lyrics line by line while the song plays. It wo
 | --- | --- |
 | `Space` or `Enter` | Stamp the outlined line with the playback position and move to the next line |
 | `Backspace` | Step back to the line before and clear its time, to stamp it again |
-| `←` / `→` | Seek 3 seconds back / forward |
-| `p` | Play/pause (also the **Pause**/**Play** button) |
+| `←` / `→` | Seek 3 seconds back / forward (also the transport's **−3 s** and **+3 s**) |
+| `p` | Play/pause (also the transport's play/pause button) |
 | `g` | Insert an instrumental break (a blank timestamped line, shown as `• • •`) before the next line, stamped now (also the **Gap** button) |
 | `Esc` | Back to the editor without the times (also **Cancel**) |
 
