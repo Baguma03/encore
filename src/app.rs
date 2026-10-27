@@ -9,6 +9,7 @@ use crate::config::{Config, Layout, LyricsAlign, LyricsFlow, Source};
 use crate::export::{self, Aspect, ExportJob, ExportRequest, ExportStatus, Quality, Style};
 use crate::player::{Command, PlayState, Player, PlayerState, SongInfo};
 use crate::ui::export_panel::{ExportPanel, LiveLook, Marks, PanelResult};
+use crate::ui::panel_theme::PanelTheme;
 use crate::ui::toasts::{Progress, Toast, Toasts};
 use crate::ui::{self, ArtView, View};
 
@@ -295,13 +296,18 @@ impl App {
         ));
     }
 
-    fn show_export_panel(&mut self, ctx: &egui::Context, elapsed: Duration) {
+    fn show_export_panel(&mut self, ctx: &egui::Context, theme: &PanelTheme, elapsed: Duration) {
         let Some(mut panel) = self.export_panel.take() else {
             return;
         };
         let lyrics = self.song_lyrics(panel.song());
         panel.refresh_lyrics(&lyrics, elapsed);
-        match panel.show(ctx, &mut self.export_formats, &mut self.export_quality) {
+        match panel.show(
+            ctx,
+            theme,
+            &mut self.export_formats,
+            &mut self.export_quality,
+        ) {
             PanelResult::Open => self.export_panel = Some(panel),
             PanelResult::Close => {}
             PanelResult::Export(req) => self.export_queue.push_back(*req),
@@ -396,14 +402,23 @@ impl App {
         self.lyrics.get(&key)
     }
 
+    fn art_view(&self) -> ArtView<'_> {
+        ArtView {
+            current: self.art.current(),
+            previous: self.art.previous(),
+            fade: self.art.fade(),
+        }
+    }
+
+    /// Colours of the panels, following the album colours and their cross-fade.
+    fn panel_theme(&self) -> PanelTheme {
+        PanelTheme::new(&self.art_view().scheme(), self.tint)
+    }
+
     fn view<'a>(&'a self, state: &'a PlayerState, lyrics: LyricsState) -> View<'a> {
         View {
             player: state,
-            art: ArtView {
-                current: self.art.current(),
-                previous: self.art.previous(),
-                fade: self.art.fade(),
-            },
+            art: self.art_view(),
             next_cover: self.art.next_cover(),
             show_clock: self.show_clock,
             lyrics_enabled: self.lyrics_enabled,
@@ -535,7 +550,8 @@ impl eframe::App for App {
 
         egui::CentralPanel::no_frame().show(ui, |ui| self.draw_layout(ui, &state, lyrics.clone()));
         // Clicking the overlay closes it.
-        if ui::shortcuts::draw(&ctx, self.show_shortcuts) {
+        let theme = self.panel_theme();
+        if ui::shortcuts::draw(&ctx, self.show_shortcuts, &theme) {
             self.show_shortcuts = false;
         }
 
@@ -543,7 +559,7 @@ impl eframe::App for App {
             self.debug_window(&ctx, &state, &lyrics);
         }
 
-        self.show_export_panel(&ctx, state.elapsed());
+        self.show_export_panel(&ctx, &theme, state.elapsed());
         self.poll_exports(&ctx);
         let progress = self.export_progress();
         if self.toasts.show(&ctx, progress.as_ref()) {

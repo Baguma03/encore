@@ -9,7 +9,9 @@ use egui::{
 };
 
 use super::font_light;
+use super::panel_theme::PanelTheme;
 use super::widgets::ease;
+use super::with_alpha;
 
 /// What triggers a shortcut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,8 +137,8 @@ fn key_name(key: Key) -> &'static str {
 
 const FADE: f32 = 0.15;
 const COLUMNS: usize = 3;
-const CARD_FILL: Color32 = Color32::from_rgba_premultiplied(27, 27, 29, 242);
-const BACKDROP: Color32 = Color32::from_black_alpha(200);
+/// Opacity of the scrim over the layout.
+const BACKDROP: f32 = 200.0 / 255.0;
 
 // Sizes for a 1000 px short side; the card scales with the window.
 const PAD: f32 = 36.0;
@@ -175,26 +177,10 @@ const MIN_SCALE: f32 = 0.75;
 /// Share of the window the card may cover before it shrinks to fit.
 const MAX_SHARE: f32 = 0.92;
 
-fn cap_stroke_color() -> Color32 {
-    Color32::from_gray(190)
-}
-
-fn cap_text_color() -> Color32 {
-    Color32::from_gray(228)
-}
-
-fn description_color() -> Color32 {
-    Color32::from_gray(200)
-}
-
-fn dim_color() -> Color32 {
-    Color32::from_gray(120)
-}
-
 /// Draws the overlay, fading in and out as `open` changes. While shown it takes every click so
 /// none reach the layout beneath; returns true when a click outside the card or on its close
-/// button should close it.
-pub fn draw(ctx: &egui::Context, open: bool) -> bool {
+/// button should close it. Colours come from `theme`.
+pub fn draw(ctx: &egui::Context, open: bool, theme: &PanelTheme) -> bool {
     let id = Id::unique("shortcuts-overlay");
     let t = ease(ctx.animate_bool_with_time(id, open, FADE));
     if t <= 0.0 {
@@ -210,7 +196,7 @@ pub fn draw(ctx: &egui::Context, open: bool) -> bool {
             let backdrop = ui.allocate_rect(screen, Sense::click());
             let mut painter = ui.painter_at(screen);
             painter.multiply_opacity(t);
-            let card = Card::fit(&painter, screen);
+            let card = Card::fit(&painter, screen, theme);
             let rect = Rect::from_center_size(screen.center(), card.size);
             // The card swallows its own clicks; only the backdrop and the close button close it.
             ui.interact(rect, id.with("card"), Sense::click());
@@ -218,7 +204,7 @@ pub fn draw(ctx: &egui::Context, open: bool) -> bool {
                 .interact(card.close_rect(rect), id.with("close"), Sense::click())
                 .on_hover_cursor(CursorIcon::PointingHand);
             let hover = ctx.animate_bool_with_time(id.with("close-hover"), close.hovered(), 0.1);
-            card.paint(&painter, screen, rect, hover);
+            card.paint(&painter, theme, screen, rect, hover);
             backdrop.clicked() || close.clicked()
         })
         .inner
@@ -262,30 +248,30 @@ struct Card {
 
 impl Card {
     /// Lays the card out for the window, shrinking it when it would not fit.
-    fn fit(painter: &Painter, screen: Rect) -> Self {
+    fn fit(painter: &Painter, screen: Rect, theme: &PanelTheme) -> Self {
         let s = (screen.width().min(screen.height()) / 1000.0).max(MIN_SCALE);
-        let card = Self::new(painter, s);
+        let card = Self::new(painter, theme, s);
         let max = screen.size() * MAX_SHARE;
         let fit = (max.x / card.size.x).min(max.y / card.size.y);
         if fit < 1.0 {
-            Self::new(painter, s * fit)
+            Self::new(painter, theme, s * fit)
         } else {
             card
         }
     }
 
-    fn new(painter: &Painter, s: f32) -> Self {
+    fn new(painter: &Painter, theme: &PanelTheme, s: f32) -> Self {
         let title = painter.layout_no_wrap(
             "Keyboard shortcuts".into(),
             font_light(PILL_TEXT * s),
-            Color32::WHITE,
+            theme.heading,
         );
         let hint = painter.layout_no_wrap(
             "Press ? or Esc to close".into(),
             font_light(HINT * s),
-            dim_color(),
+            theme.muted,
         );
-        let columns: Vec<Column> = (0..COLUMNS).map(|i| column(painter, s, i)).collect();
+        let columns: Vec<Column> = (0..COLUMNS).map(|i| column(painter, theme, s, i)).collect();
         let body = Vec2::new(
             columns.iter().map(|c| c.size.x).sum::<f32>() + COLUMN_GAP * s * (COLUMNS - 1) as f32,
             columns.iter().map(|c| c.size.y).fold(0.0, f32::max),
@@ -317,9 +303,16 @@ impl Card {
         Rect::from_center_size(center, Vec2::splat(CLOSE * s))
     }
 
-    fn paint(&self, painter: &Painter, screen: Rect, rect: Rect, close_hover: f32) {
+    fn paint(
+        &self,
+        painter: &Painter,
+        theme: &PanelTheme,
+        screen: Rect,
+        rect: Rect,
+        close_hover: f32,
+    ) {
         let s = self.s;
-        painter.rect_filled(screen, 0.0, BACKDROP);
+        painter.rect_filled(screen, 0.0, with_alpha(theme.scrim, BACKDROP));
 
         let corner = CORNER * s;
         let shadow = Shadow {
@@ -332,8 +325,8 @@ impl Card {
         painter.rect(
             rect,
             corner,
-            CARD_FILL,
-            Stroke::new(1.0, Color32::from_white_alpha(16)),
+            theme.surface,
+            Stroke::new(1.0, theme.border),
             StrokeKind::Inside,
         );
 
@@ -345,21 +338,21 @@ impl Card {
             ),
             Vec2::new(pill_width(&self.title, s), PILL_HEIGHT * s),
         );
-        painter.rect_filled(pill, pill.height() / 2.0, Color32::from_white_alpha(7));
+        painter.rect_filled(pill, pill.height() / 2.0, theme.layer(7));
         let tab = pill.shrink(PILL_INSET * s);
-        painter.rect_filled(tab, tab.height() / 2.0, Color32::from_white_alpha(16));
+        painter.rect_filled(tab, tab.height() / 2.0, theme.wash(16));
         let icon = Rect::from_min_size(
             Pos2::new(tab.left() + PILL_PAD * s, tab.center().y - ICON * s / 2.0),
             Vec2::splat(ICON * s),
         );
-        keyboard_icon(painter, icon, Color32::from_gray(225));
+        keyboard_icon(painter, icon, theme.text);
         painter.galley(
             Pos2::new(
                 icon.right() + ICON_GAP * s,
                 tab.center().y - self.title.size().y / 2.0,
             ),
             self.title.clone(),
-            Color32::WHITE,
+            theme.heading,
         );
 
         let close = self.close_rect(rect);
@@ -367,13 +360,13 @@ impl Card {
             painter.circle_filled(
                 close.center(),
                 close.width() / 2.0,
-                Color32::from_white_alpha((22.0 * close_hover) as u8),
+                theme.layer((22.0 * close_hover) as u8),
             );
         }
         let arm = close.width() * 0.17;
         let stroke = Stroke::new(
             (1.6 * s).max(1.0),
-            Color32::from_gray(200).lerp_to_gamma(Color32::WHITE, close_hover),
+            theme.body.lerp_to_gamma(theme.heading, close_hover),
         );
         let c = close.center();
         painter.line_segment([c + Vec2::splat(-arm), c + Vec2::splat(arm)], stroke);
@@ -385,7 +378,7 @@ impl Card {
             + COLUMN_GAP * s * (COLUMNS - 1) as f32;
         x += ((rect.width() - 2.0 * PAD * s) - body_width).max(0.0) / 2.0;
         for column in &self.columns {
-            paint_column(painter, column, Pos2::new(x, top), s);
+            paint_column(painter, theme, column, Pos2::new(x, top), s);
             x += column.size.x + COLUMN_GAP * s;
         }
 
@@ -395,7 +388,7 @@ impl Card {
                 rect.bottom() - PAD * s * 0.6 - self.hint.size().y,
             ),
             self.hint.clone(),
-            dim_color(),
+            theme.muted,
         );
     }
 }
@@ -417,13 +410,13 @@ fn cap_font(input: Input, s: f32) -> FontId {
     }
 }
 
-fn column(painter: &Painter, s: f32, index: usize) -> Column {
+fn column(painter: &Painter, theme: &PanelTheme, s: f32, index: usize) -> Column {
     let mut items = Vec::new();
     for group in Group::ALL.into_iter().filter(|g| g.column() == index) {
         items.push(Item::Heading(painter.layout_no_wrap(
             group.title().into(),
             font_light(HEADING * s),
-            Color32::WHITE,
+            theme.accent,
         )));
         for shortcut in SHORTCUTS.iter().filter(|sc| sc.group == group) {
             let mut parts = Vec::new();
@@ -432,19 +425,19 @@ fn column(painter: &Painter, s: f32, index: usize) -> Column {
                     parts.push(Part::Separator(painter.layout_no_wrap(
                         "/".into(),
                         mono(CAP_TEXT * s),
-                        dim_color(),
+                        theme.muted,
                     )));
                 }
                 parts.push(Part::Cap(painter.layout_no_wrap(
                     label(input).into(),
                     cap_font(input, s),
-                    cap_text_color(),
+                    theme.text,
                 )));
             }
             let text = painter.layout_no_wrap(
                 shortcut.description.into(),
                 font_light(TEXT * s),
-                description_color(),
+                theme.body,
             );
             items.push(Item::Row { parts, text });
         }
@@ -473,8 +466,8 @@ fn column(painter: &Painter, s: f32, index: usize) -> Column {
     }
 }
 
-fn paint_column(painter: &Painter, column: &Column, top_left: Pos2, s: f32) {
-    let stroke = Stroke::new(s.max(1.0), cap_stroke_color());
+fn paint_column(painter: &Painter, theme: &PanelTheme, column: &Column, top_left: Pos2, s: f32) {
+    let stroke = Stroke::new(s.max(1.0), theme.outline);
     let mut y = top_left.y;
     for (i, item) in column.items.iter().enumerate() {
         match item {
@@ -482,7 +475,7 @@ fn paint_column(painter: &Painter, column: &Column, top_left: Pos2, s: f32) {
                 if i > 0 {
                     y += HEADING_ABOVE * s;
                 }
-                painter.galley(Pos2::new(top_left.x, y), galley.clone(), Color32::WHITE);
+                painter.galley(Pos2::new(top_left.x, y), galley.clone(), theme.accent);
                 y += galley.size().y + HEADING_BELOW * s;
             }
             Item::Row { parts, text } => {
@@ -506,7 +499,7 @@ fn paint_column(painter: &Painter, column: &Column, top_left: Pos2, s: f32) {
                             .anchor_size(slot.center(), galley.size())
                             .min,
                         galley.clone(),
-                        Color32::WHITE,
+                        theme.text,
                     );
                     x += width;
                 }
@@ -514,7 +507,7 @@ fn paint_column(painter: &Painter, column: &Column, top_left: Pos2, s: f32) {
                 painter.galley(
                     Pos2::new(text_x, mid - text.size().y / 2.0 + TEXT_NUDGE * s),
                     text.clone(),
-                    Color32::WHITE,
+                    theme.body,
                 );
                 y += ROW * s;
             }
