@@ -72,8 +72,7 @@ impl Scene for LayoutScene {
             .images
             .get_or_insert_with(|| art::load_art_images(&self.cfg, &self.song));
         self.art = Some(art::upload(ctx, &self.song.file, images.clone()));
-        // Only the Spotify layout shows the next song.
-        if let Some(next) = self.next.as_ref().filter(|_| self.style == Style::Spotify) {
+        if let Some(next) = &self.next {
             let image = self
                 .next_image
                 .get_or_insert_with(|| art::load_thumb_image(&self.cfg, next));

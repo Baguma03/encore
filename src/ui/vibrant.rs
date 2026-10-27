@@ -11,6 +11,7 @@ use super::apple::{self, Meta, Orientation, COLUMN_SLIDE};
 use super::backdrop;
 use super::lyrics_column::{self, LyricsColumn};
 use super::scheme::Ink;
+use super::up_next::{self, UpNext};
 use super::widgets::{ease, lerp};
 use super::{font_bold, font_light, with_alpha, View};
 use crate::art;
@@ -217,10 +218,13 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         return background_click();
     };
 
+    // Stacked arrangements move down below the Up next card while it shows.
+    let up_next = UpNext::new(ui, screen, view);
+    let clear = up_next.clear_below(screen.top(), unit * 0.04);
     let place = match Orientation::of(screen.size()) {
         Orientation::Landscape => landscape(&painter, screen, song, clock_t, lyrics_t, &ink),
-        Orientation::Portrait => portrait(&painter, screen, song, clock_t, lyrics_t, &ink),
-        Orientation::Square => square(&painter, screen, song, clock_t, lyrics_t, &ink),
+        Orientation::Portrait => portrait(&painter, screen, song, clock_t, clear, lyrics_t, &ink),
+        Orientation::Square => square(&painter, screen, song, clock_t, clear, lyrics_t, &ink),
     };
 
     if lyrics_t > 0.01 {
@@ -230,6 +234,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         }
         let column = LyricsColumn {
             rect: place.lyrics,
+            clear_top: up_next.clear_below(place.lyrics.top(), screen.height() * 0.04),
             base: place.lyrics_base,
             anchor: place.lyrics_anchor,
             alpha: lyrics_t,
@@ -239,6 +244,11 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         };
         lyrics_column::paint(ui, id.with(&song.file), &column, view);
     }
+    up_next.paint(
+        &painter,
+        view,
+        &up_next::Colors::from_ink(&ink, SUBTITLE_ALPHA, text_shadow(view)),
+    );
     apple::paint_art(&painter, place.art, view, ART_RADIUS);
     paint_info(ui, &painter, id, view, song, &place.info, &ink).or_else(background_click)
 }
@@ -290,19 +300,20 @@ pub fn lyrics_width(width: f32) -> f32 {
 }
 
 /// Art centred near the top with its info beneath, lyrics below. Without lyrics the art and
-/// info sit centred.
+/// info sit centred. Nothing goes above `clear`.
 fn portrait(
     painter: &Painter,
     screen: Rect,
     song: &SongInfo,
     clock_t: f32,
+    clear: f32,
     lyrics_t: f32,
     ink: &Ink,
 ) -> Placement {
     let (w, h) = (screen.width(), screen.height());
     let u = w.min(h);
     let pad = w * 0.08;
-    let top = screen.top() + lerp(h * 0.07, u * 0.24, clock_t);
+    let top = (screen.top() + lerp(h * 0.07, u * 0.24, clock_t)).max(clear);
     let bottom = screen.bottom() - h * 0.04;
 
     let s = lerp((w * 0.8).min(h * 0.42), (w * 0.62).min(h * 0.34), lyrics_t);
@@ -334,19 +345,20 @@ fn portrait(
 }
 
 /// Art at the top left with its info beside it and lyrics below. Without lyrics the art and
-/// info sit centred vertically.
+/// info sit centred vertically. Nothing goes above `clear`.
 fn square(
     painter: &Painter,
     screen: Rect,
     song: &SongInfo,
     clock_t: f32,
+    clear: f32,
     lyrics_t: f32,
     ink: &Ink,
 ) -> Placement {
     let (w, h) = (screen.width(), screen.height());
     let u = w.min(h);
     let pad = w * 0.08;
-    let top = screen.top() + lerp(u * 0.07, u * 0.23, clock_t);
+    let top = (screen.top() + lerp(u * 0.07, u * 0.23, clock_t)).max(clear);
     let bottom = screen.bottom() - u * 0.05;
 
     let s = lerp(u * 0.42, u * 0.3, lyrics_t);
