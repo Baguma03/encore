@@ -28,7 +28,7 @@ use crate::config::{LyricsAlign, LyricsFlow};
 use crate::player::PlayerState;
 use scheme::{Ink, Scheme};
 
-pub const FONT_LIGHT: &str = "circular-book";
+pub const FONT_LIGHT: &str = "figtree-regular";
 pub const FONT_BOLD: &str = "bold";
 
 /// Album art to draw, with the previous song's art kept for the cross-fade.
@@ -156,19 +156,19 @@ impl View<'_> {
     }
 }
 
-/// Registers CircularStd Book as the default proportional font and Bold as the `"bold"` family.
+/// Registers Figtree Regular as the default proportional font and Bold as the `"bold"` family.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
         FONT_LIGHT.to_owned(),
         Arc::new(FontData::from_static(include_bytes!(
-            "../../assets/font/CircularStd-Book.otf"
+            "../../assets/font/Figtree-Regular.ttf"
         ))),
     );
     fonts.font_data.insert(
         FONT_BOLD.to_owned(),
         Arc::new(FontData::from_static(include_bytes!(
-            "../../assets/font/CircularStd-Bold.otf"
+            "../../assets/font/Figtree-Bold.ttf"
         ))),
     );
     fonts
@@ -176,7 +176,7 @@ pub fn install_fonts(ctx: &egui::Context) {
         .entry(FontFamily::Proportional)
         .or_default()
         .insert(0, FONT_LIGHT.to_owned());
-    // Keep egui's fallbacks behind the bold face for glyphs CircularStd lacks.
+    // Keep egui's fallbacks behind the bold face for glyphs Figtree lacks.
     let mut bold = vec![FONT_BOLD.to_owned()];
     bold.extend(
         fonts

@@ -179,7 +179,7 @@ const HEADING: f32 = 25.0;
 const HEADING_ABOVE: f32 = 16.0;
 const HEADING_BELOW: f32 = 4.0;
 const TEXT: f32 = 15.0;
-/// CircularStd sits high in its line box; this lowers descriptions onto the key caps' centre.
+/// Figtree sits high in its line box; this lowers descriptions onto the key caps' centre.
 const TEXT_NUDGE: f32 = 1.5;
 const ROW: f32 = 28.0;
 const CAP_TEXT: f32 = 13.0;

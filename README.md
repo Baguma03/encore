@@ -111,9 +111,9 @@ Encore starts fullscreen. `Esc` or `q` quits, `f` toggles fullscreen and `?` sho
 Issues and pull requests are welcome.
 
 ## Licence
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). The bundled [Figtree](https://github.com/erikdkennedy/figtree) font is licensed under the SIL Open Font License 1.1 — see [assets/font/OFL.txt](assets/font/OFL.txt).
 
 ## Credits
 Encore began as a fork of mpd-display-rs by Allison Linhart, original repository has since been taken down.
 
-Built with [eframe/egui](https://crates.io/crates/eframe), the [mpd](https://crates.io/crates/mpd) crate and [zbus](https://crates.io/crates/zbus). Online lyrics come from [LRCLIB](https://lrclib.net) and KuGou, and artist images from [TheAudioDB](https://www.theaudiodb.com) and [Deezer](https://www.deezer.com).
+Built with [eframe/egui](https://crates.io/crates/eframe), the [mpd](https://crates.io/crates/mpd) crate and [zbus](https://crates.io/crates/zbus). Online lyrics come from [LRCLIB](https://lrclib.net) and KuGou, and artist images from [TheAudioDB](https://www.theaudiodb.com) and [Deezer](https://www.deezer.com). Text is set in [Figtree](https://github.com/erikdkennedy/figtree) by Erik Kennedy.
