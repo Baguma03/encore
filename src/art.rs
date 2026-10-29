@@ -20,8 +20,6 @@ use crate::config::Config;
 use crate::player::{file_url_path, Origin, SongInfo};
 use crate::ui::scheme::Scheme;
 
-const BACKUP_ART_PATH: &str = "./assets/art_backup";
-
 const COVER_MAX: u32 = 1024;
 /// Largest cover downloaded from an MPRIS player's `http(s)://` art URL.
 const ART_DOWNLOAD_MAX: u64 = 20 * 1024 * 1024;
@@ -407,9 +405,9 @@ struct Worker {
 
 impl Worker {
     fn new(cfg: &Config) -> Self {
-        let backup = load_file(Path::new(BACKUP_ART_PATH)).unwrap_or_else(|| {
-            DynamicImage::ImageRgba8(RgbaImage::from_pixel(1, 1, [80, 80, 80, 255].into()))
-        });
+        // Songs without a cover show a plain grey square.
+        let backup =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(1, 1, [80, 80, 80, 255].into()));
         Self {
             host: cfg.mpc_host(),
             port: cfg.mpd_port.to_string(),

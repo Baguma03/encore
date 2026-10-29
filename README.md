@@ -57,12 +57,11 @@ The binary lands in `~/.cargo/bin`, which must be on `PATH`.
 Prebuilt binaries (GitHub Releases) and an AUR package are planned; until then, build from source.
 
 ### Desktop entry
-To start Encore from a desktop launcher such as GNOME's or KDE's, install the desktop entry and icon from the repository:
+To start Encore from a desktop launcher such as GNOME's or KDE's, install the desktop entry from the repository:
 ```
 install -Dm644 encore.desktop ~/.local/share/applications/encore.desktop
-install -Dm644 assets/logo.png ~/.local/share/pixmaps/encore.png
 ```
-The entry runs `encore`, so `~/.cargo/bin` must be on `PATH` (as it is after `cargo install` with a standard Rust setup). The icon is not square, so it goes in `pixmaps`, which accepts any size, rather than in a `hicolor` size directory.
+The entry runs `encore`, so `~/.cargo/bin` must be on `PATH` (as it is after `cargo install` with a standard Rust setup).
 
 The window's class (app id) is `encore`, for use in compositor window rules.
 
