@@ -1,0 +1,124 @@
+# Builds the Linux release packages. Pushing a tag such as v0.2.0 publishes
+# them as a GitHub Release; running the workflow by hand (workflow_dispatch)
+# builds the same files as a downloadable workflow artifact without publishing.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-x86_64:
+    # Ubuntu 22.04 (glibc 2.35) keeps the binary compatible with
+    # Ubuntu 22.04 / Linux Mint 21 and newer.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Read the version from Cargo.toml
+        id: version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "encore") | .version')
+          echo "Cargo.toml version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag matches the Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${VERSION} (expected tag v${VERSION})."
+            exit 1
+          fi
+
+      # winit loads X11, Wayland and xkbcommon with dlopen and wgpu loads
+      # Vulkan/GL the same way, so these headers are not strictly needed to
+      # link; they are installed so that any crate probing them with
+      # pkg-config at build time finds them.
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libvulkan-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+
+      - name: Build the .deb package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          cargo deb --no-build --output "dist/encore_${VERSION}_amd64.deb"
+          dpkg-deb --info "dist/encore_${VERSION}_amd64.deb"
+          dpkg-deb --contents "dist/encore_${VERSION}_amd64.deb"
+
+      - name: Build the tarball
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          name="encore-${VERSION}-x86_64-linux"
+          stage="dist/${name}"
+          mkdir -p "${stage}/licenses"
+          install -m 755 target/release/encore "${stage}/encore"
+          strip "${stage}/encore"
+          install -m 644 encore.desktop README.md LICENSE "${stage}/"
+          install -m 755 packaging/install.sh "${stage}/install.sh"
+          install -m 644 assets/font/OFL-Figtree.txt assets/font/OFL-LexendDeca.txt "${stage}/licenses/"
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          rm -rf "${stage}"
+          tar -tzvf "dist/${name}.tar.gz"
+
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum -- *.deb *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: encore-${{ steps.version.outputs.version }}-linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.deb
+            dist/*.tar.gz
+            dist/SHA256SUMS

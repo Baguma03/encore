@@ -34,6 +34,32 @@ base64 = "0.23"
 percent-encoding = "2"
 toml = "1.1.8"
 
+# Debian package built by cargo-deb (see docs/releasing.md).
+# The binary dlopens its windowing and graphics libraries at runtime, so
+# `$auto` only finds libc; the X11, Wayland, xkbcommon and GL/Vulkan
+# libraries are listed explicitly.
+[package.metadata.deb]
+maintainer = "Baguma03 <Baguma03@users.noreply.github.com>"
+copyright = "2026 Baguma03"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+Encore shows the playing track fullscreen: album art, album-derived colours, \
+artist background images and time-synced lyrics. It follows MPD, or any \
+MPRIS-capable player such as Spotify, Firefox or VLC."""
+section = "sound"
+priority = "optional"
+depends = "$auto, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2, libgl1 | libvulkan1"
+recommends = "ffmpeg"
+suggests = "mpc, mpd"
+assets = [
+    ["target/release/encore", "usr/bin/", "755"],
+    ["encore.desktop", "usr/share/applications/", "644"],
+    ["README.md", "usr/share/doc/encore/", "644"],
+    ["LICENSE", "usr/share/doc/encore/", "644"],
+    ["assets/font/OFL-Figtree.txt", "usr/share/doc/encore/", "644"],
+    ["assets/font/OFL-LexendDeca.txt", "usr/share/doc/encore/", "644"],
+]
+
 # Dependencies build without debug info, which keeps target/debug small.
 [profile.dev.package."*"]
 debug = false

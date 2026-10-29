@@ -22,10 +22,29 @@ Encore is a fullscreen now-playing display for Linux. It follows [MPD](https://w
 
 ## Installation
 
+### Linux Mint, Ubuntu and Debian
+1. Download the `.deb` file (`encore_<version>_amd64.deb`) from the [latest release](https://github.com/Baguma03/encore/releases/latest).
+2. Double-click the downloaded file to open it in the package installer, then click **Install**.
+3. Start Encore from the applications menu.
+
+MPRIS players such as Spotify, Firefox and VLC work with no further setup. MPD users also install `mpc` (`sudo apt install mpc`), which fetches MPD's album art. To remove Encore, uninstall the `encore` package from the package manager, or run `sudo apt remove encore`.
+
+### Other distributions
+Download `encore-<version>-x86_64-linux.tar.gz` from the [latest release](https://github.com/Baguma03/encore/releases/latest), unpack it and run the install script:
+```
+tar -xzf encore-<version>-x86_64-linux.tar.gz
+cd encore-<version>-x86_64-linux
+./install.sh
+```
+The script installs the binary to `~/.local/bin/encore` and a desktop entry to `~/.local/share/applications/encore.desktop`, without root access. `./install.sh --uninstall` removes both. Each release also lists a `SHA256SUMS` file for checking the downloads (`sha256sum -c --ignore-missing SHA256SUMS`).
+
+An AUR package is planned.
+
 ### Requirements
 - Linux, on Wayland or X11, with a GPU driver that provides Vulkan or OpenGL (rendering uses wgpu).
+- For the prebuilt `.deb` and tarball: x86_64 and glibc 2.35 or newer (Ubuntu 22.04, Linux Mint 21, Debian 12 or newer).
 - A playback source: an MPD server, or any MPRIS-capable player. MPRIS needs a D-Bus session bus, which desktop sessions provide. MPD needs `mpc`, which fetches its album art.
-- Rust and `cargo`, to build from source. [rustup](https://rustup.rs) installs them.
+- Rust and `cargo`, only to build from source. [rustup](https://rustup.rs) installs them.
 - Optionally `ffmpeg` with libx264 and aac, for [exporting lyric clips](docs/export.md).
 
 | Distribution  | MPD and `mpc` (MPD only)           | `ffmpeg` (optional)                                                            |
@@ -54,11 +73,8 @@ cargo install --git https://github.com/Baguma03/encore
 ```
 The binary lands in `~/.cargo/bin`, which must be on `PATH`.
 
-### Prebuilt binaries and AUR
-Prebuilt binaries (GitHub Releases) and an AUR package are planned; until then, build from source.
-
 ### Desktop entry
-To start Encore from a desktop launcher such as GNOME's or KDE's, install the desktop entry from the repository:
+The `.deb` package and `install.sh` install a desktop entry. For a build from source or `cargo install`, install the desktop entry from the repository to start Encore from a desktop launcher such as GNOME's, KDE's or Cinnamon's:
 ```
 install -Dm644 encore.desktop ~/.local/share/applications/encore.desktop
 ```
@@ -108,6 +124,7 @@ Encore starts fullscreen. `Esc` or `q` quits, `f` toggles fullscreen and `?` sho
 - [Lyrics](docs/lyrics.md): lyric sources, online lookup, the lyrics manager and the sync view
 - [Exporting lyric clips](docs/export.md): formats, the export panel, quality and output
 - [Artist backgrounds](docs/artist-backgrounds.md): artist images and artist name parsing
+- [Releasing](docs/releasing.md): building and publishing the `.deb` and tarball release packages
 
 ## Contributing
 Issues and pull requests are welcome.
