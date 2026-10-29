@@ -2,6 +2,10 @@
 name = "encore"
 version = "0.1.0"
 edition = "2021"
+description = "Fullscreen now-playing display for MPD and MPRIS players with album colours and time-synced lyrics"
+license = "MIT"
+repository = "https://github.com/Baguma03/encore"
+readme = "README.md"
 
 [lib]
 path = "src/lib.rs"
