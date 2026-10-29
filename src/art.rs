@@ -58,6 +58,8 @@ pub struct ArtTextures {
     pub artist_bg: Option<TextureHandle>,
     /// Mean relative luminance of the artist image, `0.0..=1.0`; 0.5 without one.
     pub artist_brightness: f32,
+    /// Colours adapted to the artist image, present together with `artist_bg`.
+    pub artist_scheme: Option<Scheme>,
     pub dominant: Color32,
     /// Distinct vivid colours of the cover, most prominent first; never empty.
     pub palette: Vec<Color32>,
@@ -78,6 +80,8 @@ pub struct ArtImages {
     pub artist_bg: Option<ColorImage>,
     /// Mean relative luminance of the artist image, `0.0..=1.0`; 0.5 without one.
     pub artist_brightness: f32,
+    /// Colours adapted to the artist image, present together with `artist_bg`.
+    pub artist_scheme: Option<Scheme>,
     pub dominant: Color32,
     /// Distinct vivid colours of the cover, most prominent first; never empty.
     pub palette: Vec<Color32>,
@@ -85,6 +89,32 @@ pub struct ArtImages {
     pub brightness: f32,
     /// Colours adapted to the cover.
     pub scheme: Scheme,
+}
+
+impl ArtTextures {
+    /// The album colours: the artist image's when `artist_bg` is on and the song has an
+    /// artist image, which is then the background, else the cover's.
+    pub fn colours(&self, artist_bg: bool) -> Scheme {
+        pick_scheme(self.scheme, self.artist_scheme, artist_bg)
+    }
+}
+
+/// The colours of the image behind the layout: `artist`, the artist image's colours, when the
+/// artist background is on and the image exists, else `cover`.
+pub fn pick_scheme(cover: Scheme, artist: Option<Scheme>, artist_bg: bool) -> Scheme {
+    match artist {
+        Some(artist) if artist_bg => artist,
+        _ => cover,
+    }
+}
+
+/// An artist image decoded for display, with what is derived from it.
+struct ArtistImage {
+    image: ColorImage,
+    /// Mean relative luminance, `0.0..=1.0`.
+    brightness: f32,
+    /// Colours adapted to the image, as [`ArtImages::scheme`] is to the cover.
+    scheme: Scheme,
 }
 
 /// Small cover of the song queued after the current one.
@@ -112,7 +142,7 @@ fn art_key(song: &SongInfo) -> ArtKey {
 enum Loaded {
     Art(ArtKey, Box<ArtImages>),
     Thumb(ArtKey, ColorImage),
-    Artist(ArtKey, Option<(ColorImage, f32)>),
+    Artist(ArtKey, Option<Box<ArtistImage>>),
 }
 
 /// Loads album art, artist backgrounds and the next song's cover on a worker thread; textures
@@ -169,7 +199,7 @@ impl ArtLoader {
                                 Loaded::Thumb(art_key(&song), image)
                             }
                             Request::Artist(key, artist) => {
-                                Loaded::Artist(key, artist_image(&artist))
+                                Loaded::Artist(key, artist_image(&artist).map(Box::new))
                             }
                         };
                         if res_tx.send(loaded).is_err() {
@@ -272,7 +302,7 @@ impl ArtLoader {
                         self.thumb = Some(upload_thumb(ctx, &key.0, image));
                     }
                 }
-                Loaded::Artist(key, Some((image, brightness))) => {
+                Loaded::Artist(key, Some(artist)) => {
                     let Some(current) = self.current.as_ref().filter(|art| {
                         self.requested.borrow().as_ref() == Some(&key)
                             && art.song_file == key.0
@@ -280,14 +310,16 @@ impl ArtLoader {
                     }) else {
                         continue;
                     };
-                    // The same art with the artist image, cross-faded in like a new song.
+                    // The same art with the artist image and its colours, cross-faded in like a
+                    // new song.
                     let mut textures = current.clone();
                     textures.artist_bg = Some(ctx.load_texture(
                         format!("artist:{}", key.0),
-                        image,
+                        artist.image,
                         TextureOptions::LINEAR,
                     ));
-                    textures.artist_brightness = brightness;
+                    textures.artist_brightness = artist.brightness;
+                    textures.artist_scheme = Some(artist.scheme);
                     self.previous = self.current.replace(textures);
                     self.changed_at = Some(Instant::now());
                     changed = true;
@@ -339,6 +371,7 @@ pub fn upload(ctx: &egui::Context, song_file: &str, images: ArtImages) -> ArtTex
         ),
         artist_bg: images.artist_bg.map(|img| load("artist", img)),
         artist_brightness: images.artist_brightness,
+        artist_scheme: images.artist_scheme,
         dominant: images.dominant,
         palette: images.palette,
         brightness: images.brightness,
@@ -409,13 +442,12 @@ impl Worker {
             cover
         };
         let small = cover.thumbnail(BACKDROP_SMALL, BACKDROP_SMALL).to_rgba8();
-        let (artist_bg, artist_brightness) = match artist_image(&song.artist) {
-            Some((img, brightness)) => (Some(img), brightness),
-            None => (None, 0.5),
-        };
+        let artist = artist_image(&song.artist);
 
         ArtImages {
-            artist_brightness,
+            artist_brightness: artist.as_ref().map_or(0.5, |a| a.brightness),
+            artist_scheme: artist.as_ref().map(|a| a.scheme),
+            artist_bg: artist.map(|a| a.image),
             backdrop: to_color_image(&backdrop(&small)),
             motion: to_color_image(&motion(&small)),
             dominant: dominant_color(&small),
@@ -423,7 +455,6 @@ impl Worker {
             scheme: Scheme::from_art(average_color(&small)),
             palette: palette(&imageops::thumbnail(&small, PALETTE_SAMPLE, PALETTE_SAMPLE)),
             cover: to_color_image(&cover.to_rgba8()),
-            artist_bg,
         }
     }
 
@@ -520,16 +551,23 @@ fn artist_background(artist: &str) -> Option<DynamicImage> {
 }
 
 /// The artist image of `artist` scaled to at most [`ARTIST_BG_MAX`], with its mean relative
-/// luminance.
-fn artist_image(artist: &str) -> Option<(ColorImage, f32)> {
+/// luminance and its colours, derived the same way as the cover's.
+fn artist_image(artist: &str) -> Option<ArtistImage> {
     let img = artist_background(artist)?;
     let brightness = brightness(&img.thumbnail(PALETTE_SAMPLE, PALETTE_SAMPLE).to_rgba8());
+    let scheme = Scheme::from_art(average_color(
+        &img.thumbnail(BACKDROP_SMALL, BACKDROP_SMALL).to_rgba8(),
+    ));
     let img = if img.width().max(img.height()) > ARTIST_BG_MAX {
         img.resize(ARTIST_BG_MAX, ARTIST_BG_MAX, FilterType::Triangle)
     } else {
         img
     };
-    Some((to_color_image(&img.to_rgba8()), brightness))
+    Some(ArtistImage {
+        image: to_color_image(&img.to_rgba8()),
+        brightness,
+        scheme,
+    })
 }
 
 fn load_file(path: &Path) -> Option<DynamicImage> {
@@ -799,6 +837,17 @@ mod tests {
             art_key(&song(Some("file:///c.jpg"))),
             art_key(&song(Some("file:///c.jpg")))
         );
+    }
+
+    #[test]
+    fn colours_follow_the_artist_image_only_when_it_is_the_background() {
+        let cover = Scheme::from_art(Color32::from_rgb(220, 40, 60));
+        let artist = Scheme::from_art(Color32::from_rgb(30, 60, 200));
+        assert_eq!(pick_scheme(cover, Some(artist), true), artist);
+        assert_eq!(pick_scheme(cover, Some(artist), false), cover);
+        // Without an artist image the cover stays the background and the source.
+        assert_eq!(pick_scheme(cover, None, true), cover);
+        assert_eq!(pick_scheme(cover, None, false), cover);
     }
 
     #[test]

@@ -3393,6 +3393,8 @@ mod snapshot {
             current: art.as_ref(),
             previous: None,
             fade: 1.0,
+            artist_colours: false,
+            switch: None,
         };
         let theme = PanelTheme::new(&art.scheme(), true);
         let mut toasts = Toasts::default();

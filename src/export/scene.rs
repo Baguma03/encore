@@ -90,6 +90,10 @@ impl Scene for LayoutScene {
                 current: self.art.as_ref(),
                 previous: None,
                 fade: 1.0,
+                // The export's background is the artist image whenever it has one, so its colours
+                // follow the same rule as the live display.
+                artist_colours: self.artist_bg,
+                switch: None,
             },
             next_cover: self.next_cover.as_ref(),
             show_clock: false,

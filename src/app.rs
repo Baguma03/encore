@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui::{Event, Key, Modifiers, ViewportCommand};
 use encore::lyrics::{Lyrics, LyricsConfig, LyricsProvider, LyricsState};
@@ -13,7 +13,7 @@ use crate::ui::export_panel::{ExportPanel, LiveLook, Marks, PanelResult};
 use crate::ui::lyrics_panel::{self, LyricsPanel};
 use crate::ui::panel_theme::PanelTheme;
 use crate::ui::toasts::{Progress, Toast, Toasts};
-use crate::ui::{self, ArtView, View};
+use crate::ui::{self, ArtView, ColourSource, View};
 
 const PLAYING_FRAME: Duration = Duration::from_millis(33);
 const IDLE_TICK: Duration = Duration::from_secs(1);
@@ -235,6 +235,9 @@ pub struct App {
     motion: bool,
     /// Whether each layout uses the artist image as its background, kept for the session.
     artist_bg: HashMap<Layout, bool>,
+    /// Whether the album colours come from the artist image, following `artist_bg` for the
+    /// current layout, with the cross-fade after it changes.
+    colour_source: ColourSource,
     tint: bool,
     skip_buttons: bool,
     lyrics_align: LyricsAlign,
@@ -277,6 +280,7 @@ impl App {
         let toasts = Toasts::default();
 
         Self {
+            colour_source: ColourSource::new(config.artist_bg(config.layout)),
             layout: config.layout,
             lyrics_enabled: config.lyrics_enabled,
             motion: config.motion,
@@ -407,6 +411,16 @@ impl App {
                 }
             }
             Action::CloseLyricsPanel => self.lyrics_panel = None,
+        }
+    }
+
+    /// Takes the album colours from the artist image while the current layout uses it as the
+    /// background, cross-fading from the colours shown so far when that changes.
+    fn follow_colour_source(&mut self) {
+        let artist = self.artist_bg_for(self.layout);
+        if artist != self.colour_source.artist() {
+            let shown = self.art_view().scheme();
+            self.colour_source.set(artist, shown, Instant::now());
         }
     }
 
@@ -601,6 +615,8 @@ impl App {
             current: self.art.current(),
             previous: self.art.previous(),
             fade: self.art.fade(),
+            artist_colours: self.colour_source.artist(),
+            switch: self.colour_source.switch(Instant::now()),
         }
     }
 
@@ -744,6 +760,7 @@ impl eframe::App for App {
             self.art.request_next(next);
         }
         self.art.poll(&ctx);
+        self.follow_colour_source();
 
         let lyrics = self.update_lyrics(&state);
 
@@ -768,7 +785,7 @@ impl eframe::App for App {
             }
         }
 
-        let fading = self.art.fade() < 1.0;
+        let fading = self.art.fade() < 1.0 || self.colour_source.switch(Instant::now()).is_some();
         let overlays = self.export_panel.is_some()
             || self.lyrics_panel.is_some()
             || self.show_shortcuts

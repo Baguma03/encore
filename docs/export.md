@@ -18,7 +18,7 @@ The **Style** chips (**Classic**, **Vibrant** and **Encore Classic**) choose the
 - **Lyrics** (**Left**, **Center**, **Right**) and **Flow** (**Classic**, **Stacked**): the Encore Classic style's lyric alignment and flow; disabled for the other styles.
 - **Motion**: the moving backdrop, or a still one when off.
 - **Artist background**: the artist image as the background; it starts at the live setting of the chosen style's layout and is disabled, with a note, when the [artists folder](artist-backgrounds.md) has no image for the song's artist.
-- **Album colours**: [album colours](layouts.md#album-colours), or the plain look when off.
+- **Album colours**: [album colours](layouts.md#album-colours), taken from the artist image when it is the clip's background and from the cover otherwise, or the plain look when off.
 
 Encore Classic clips also follow the display's skip-button setting (`s`).
 

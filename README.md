@@ -1,6 +1,6 @@
 # Encore
 
-Encore is a fullscreen now-playing display for Linux. It follows [MPD](https://www.musicpd.org) or any MPRIS player (Spotify, Firefox, VLC, mpv, Rhythmbox...) and shows the current song with its album art, colours drawn from the cover, time-synced lyrics and three layouts, plus a lyrics manager and lyric clip export. It displays and controls playback (play/pause, seek, previous/next); it is not a full player or MPD client.
+Encore is a fullscreen now-playing display for Linux. It follows [MPD](https://www.musicpd.org) or any MPRIS player (Spotify, Firefox, VLC, mpv, Rhythmbox...) and shows the current song with its album art, colours drawn from the cover or the artist image behind it, time-synced lyrics and three layouts, plus a lyrics manager and lyric clip export. It displays and controls playback (play/pause, seek, previous/next); it is not a full player or MPD client.
 
 ## Screenshots
 | Encore Classic                                                                                       | Classic                                                                                               | Vibrant                                                                          |
@@ -10,7 +10,7 @@ Encore is a fullscreen now-playing display for Linux. It follows [MPD](https://w
 
 ## Features
 - Three [layouts](docs/layouts.md): Encore Classic, Classic and Vibrant, with a moving album-art backdrop and an "Up next" card
-- [Album colours](docs/layouts.md#album-colours) for text, icons and bars, drawn from the cover
+- [Album colours](docs/layouts.md#album-colours) for text, icons and bars, drawn from the cover, or from the artist image when it is the background
 - Time-synced [lyrics](docs/lyrics.md) from local files, a cache, LRCLIB or KuGou
 - A [lyrics manager](docs/lyrics.md#lyrics-manager) for searching, importing, editing and re-timing lyrics, with a tap-to-sync view
 - [Lyric clip export](docs/export.md) as share-ready MP4s in 16:9, 9:16 and 1:1

@@ -1,6 +1,6 @@
 # Artist backgrounds
 
-The layouts can use an image of the song's artist as their background (toggle with `a`; see [Layouts](layouts.md)). Without an image for the artist, each layout falls back to its own backdrop.
+The layouts can use an image of the song's artist as their background (toggle with `a`; see [Layouts](layouts.md)). Without an image for the artist, each layout falls back to its own backdrop. While the artist image is the background, the [album colours](layouts.md#album-colours) come from it instead of the cover.
 
 ## Where images come from
 Encore looks for the artist's image in this order and uses the first one it finds:

@@ -15,7 +15,7 @@ pub mod wavy;
 pub mod widgets;
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui::{
     Color32, FontData, FontDefinitions, FontFamily, FontId, Galley, Painter, Pos2, Rect, Vec2,
@@ -23,7 +23,7 @@ use egui::{
 
 use encore::lyrics::LyricsState;
 
-use crate::art::{ArtTextures, Thumb};
+use crate::art::{ArtTextures, Thumb, ART_FADE};
 use crate::config::{LyricsAlign, LyricsFlow};
 use crate::player::PlayerState;
 use scheme::{Ink, Scheme};
@@ -38,17 +38,71 @@ pub struct ArtView<'a> {
     pub previous: Option<&'a ArtTextures>,
     /// Opacity of `current` over `previous`; 1.0 once the cross-fade is over.
     pub fade: f32,
+    /// The album colours come from the artist image wherever it is available, because it is
+    /// the background; otherwise from the cover. See [`ArtTextures::colours`].
+    pub artist_colours: bool,
+    /// The colours shown before the colour source last switched, and how far the cross-fade
+    /// from them has got; see [`ColourSource`].
+    pub switch: Option<(Scheme, f32)>,
 }
 
 impl ArtView<'_> {
-    /// Colours of the current art, cross-fading from the previous song's.
+    /// The album colours of the current art, cross-fading from the previous song's and from
+    /// the colours shown before the colour source switched.
     pub fn scheme(&self) -> Scheme {
-        let of = |art: Option<&ArtTextures>| art.map_or_else(Scheme::default, |a| a.scheme);
+        let of = |art: Option<&ArtTextures>| {
+            art.map_or_else(Scheme::default, |a| a.colours(self.artist_colours))
+        };
         let current = of(self.current);
-        match self.previous.filter(|_| self.fade < 1.0) {
-            Some(prev) => prev.scheme.lerp(&current, self.fade),
+        let songs = match self.previous.filter(|_| self.fade < 1.0) {
+            Some(prev) => of(Some(prev)).lerp(&current, self.fade),
             None => current,
+        };
+        match self.switch {
+            Some((from, t)) if t < 1.0 => from.lerp(&songs, t),
+            _ => songs,
         }
+    }
+}
+
+/// Where the album colours come from, the cover or the artist image, and the cross-fade
+/// between the two after a switch: toggling the artist background or changing to a layout
+/// with the other setting.
+#[derive(Clone, Copy, Debug)]
+pub struct ColourSource {
+    artist: bool,
+    /// The colours shown when the source last switched, and when it did.
+    switched: Option<(Scheme, Instant)>,
+}
+
+impl ColourSource {
+    pub fn new(artist: bool) -> Self {
+        Self {
+            artist,
+            switched: None,
+        }
+    }
+
+    /// Whether the colours come from the artist image when it is available.
+    pub fn artist(&self) -> bool {
+        self.artist
+    }
+
+    /// Takes the colours from the artist image when `artist` is set, else from the cover. On a
+    /// switch the colours cross-fade from `shown`, those shown until `now`, over [`ART_FADE`].
+    pub fn set(&mut self, artist: bool, shown: Scheme, now: Instant) {
+        if artist != self.artist {
+            self.artist = artist;
+            self.switched = Some((shown, now));
+        }
+    }
+
+    /// The colours shown before the last switch and the progress of the cross-fade from them,
+    /// in `0.0..1.0`; `None` once it is over.
+    pub fn switch(&self, now: Instant) -> Option<(Scheme, f32)> {
+        let (from, at) = self.switched?;
+        let t = now.saturating_duration_since(at).as_secs_f32() / ART_FADE.as_secs_f32();
+        (t < 1.0).then_some((from, t))
     }
 }
 
@@ -191,6 +245,111 @@ pub fn with_alpha(color: Color32, alpha: f32) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::art::ArtImages;
+    use egui::ColorImage;
+
+    fn art(ctx: &egui::Context, file: &str, cover: Scheme, artist: Option<Scheme>) -> ArtTextures {
+        let image = || ColorImage::new([1, 1], vec![Color32::GRAY]);
+        crate::art::upload(
+            ctx,
+            file,
+            ArtImages {
+                cover: image(),
+                backdrop: image(),
+                motion: image(),
+                artist_bg: artist.map(|_| image()),
+                artist_brightness: 0.5,
+                artist_scheme: artist,
+                dominant: Color32::GRAY,
+                palette: vec![Color32::GRAY],
+                brightness: 0.5,
+                scheme: cover,
+            },
+        )
+    }
+
+    fn red() -> Scheme {
+        Scheme::from_art(Color32::from_rgb(220, 40, 60))
+    }
+
+    fn blue() -> Scheme {
+        Scheme::from_art(Color32::from_rgb(30, 60, 200))
+    }
+
+    fn green() -> Scheme {
+        Scheme::from_art(Color32::from_rgb(40, 200, 120))
+    }
+
+    #[test]
+    fn art_view_takes_colours_from_the_background_image() {
+        let ctx = egui::Context::default();
+        let with_artist = art(&ctx, "a", red(), Some(blue()));
+        let without = art(&ctx, "b", green(), None);
+        let view = |current, artist_colours| ArtView {
+            current: Some(current),
+            fade: 1.0,
+            artist_colours,
+            ..Default::default()
+        };
+        assert_eq!(view(&with_artist, true).scheme(), blue());
+        assert_eq!(view(&with_artist, false).scheme(), red());
+        assert_eq!(view(&without, true).scheme(), green());
+    }
+
+    #[test]
+    fn art_view_cross_fades_between_songs_and_sources() {
+        let ctx = egui::Context::default();
+        let prev = art(&ctx, "a", red(), Some(blue()));
+        let cur = art(&ctx, "b", green(), None);
+        // A song change fades from the previous song's artist colours to the new cover's.
+        let songs = ArtView {
+            current: Some(&cur),
+            previous: Some(&prev),
+            fade: 0.5,
+            artist_colours: true,
+            switch: None,
+        };
+        assert_eq!(songs.scheme(), blue().lerp(&green(), 0.5));
+        // A source switch fades from what was shown to the new source's colours.
+        let switched = ArtView {
+            current: Some(&prev),
+            fade: 1.0,
+            artist_colours: true,
+            switch: Some((red(), 0.25)),
+            ..Default::default()
+        };
+        assert_eq!(switched.scheme(), red().lerp(&blue(), 0.25));
+        let done = ArtView {
+            switch: Some((red(), 1.0)),
+            ..switched
+        };
+        assert_eq!(done.scheme(), blue());
+    }
+
+    #[test]
+    fn colour_source_cross_fades_after_a_switch() {
+        let start = Instant::now();
+        let mut source = ColourSource::new(false);
+        assert!(!source.artist());
+        assert!(source.switch(start).is_none());
+        // Setting the same source starts no fade.
+        source.set(false, red(), start);
+        assert!(source.switch(start).is_none());
+
+        source.set(true, red(), start);
+        assert!(source.artist());
+        let (from, t) = source.switch(start + ART_FADE / 2).expect("fading");
+        assert_eq!(from, red());
+        assert!((t - 0.5).abs() < 1e-3, "{t}");
+        assert!(source.switch(start + ART_FADE).is_none());
+
+        // Switching back takes over from the colours shown at that moment.
+        source.set(false, blue(), start + ART_FADE * 2);
+        assert!(!source.artist());
+        let (from, t) = source.switch(start + ART_FADE * 2).expect("fading");
+        assert_eq!(from, blue());
+        assert_eq!(t, 0.0);
+    }
 
     #[test]
     fn formats_time() {
