@@ -14,12 +14,13 @@ use log::{debug, warn};
 use base64::Engine;
 use percent_encoding::percent_decode_str;
 
+use encore::artists::{first_artist, ArtistConfig, ArtistFetcher, Fetched};
+
 use crate::config::Config;
 use crate::player::{file_url_path, Origin, SongInfo};
 use crate::ui::scheme::Scheme;
 
 const BACKUP_ART_PATH: &str = "./assets/art_backup";
-const ARTIST_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
 
 const COVER_MAX: u32 = 1024;
 /// Largest cover downloaded from an MPRIS player's `http(s)://` art URL.
@@ -47,6 +48,7 @@ const PALETTE_MIN_DISTANCE: f32 = 64.0;
 /// Length of the cross-fade between the previous and current art.
 pub const ART_FADE: Duration = Duration::from_millis(400);
 
+#[derive(Clone)]
 pub struct ArtTextures {
     pub song_file: String,
     pub cover: TextureHandle,
@@ -94,6 +96,9 @@ pub struct Thumb {
 enum Request {
     Art(SongInfo),
     Thumb(SongInfo),
+    /// Reload only the artist image of the song with this art, for an image downloaded after
+    /// its art was loaded.
+    Artist(ArtKey, String),
 }
 
 /// What identifies a song's art: its file, and for an MPRIS player the art URL, which players
@@ -107,14 +112,20 @@ fn art_key(song: &SongInfo) -> ArtKey {
 enum Loaded {
     Art(ArtKey, Box<ArtImages>),
     Thumb(ArtKey, ColorImage),
+    Artist(ArtKey, Option<(ColorImage, f32)>),
 }
 
 /// Loads album art, artist backgrounds and the next song's cover on a worker thread; textures
-/// are created on the UI thread.
+/// are created on the UI thread. Artist images missing locally are looked up online on a
+/// separate thread, see [`ArtistFetcher`].
 pub struct ArtLoader {
     tx: mpsc::Sender<Request>,
     rx: mpsc::Receiver<Loaded>,
     requested: RefCell<Option<ArtKey>>,
+    /// Artist tag of the song in `requested`.
+    requested_artist: RefCell<String>,
+    /// Online artist image lookups; `None` when they are turned off.
+    artists: Option<ArtistFetcher>,
     requested_thumb: RefCell<Option<ArtKey>>,
     current: Option<ArtTextures>,
     previous: Option<ArtTextures>,
@@ -124,6 +135,11 @@ pub struct ArtLoader {
 
 impl ArtLoader {
     pub fn new(cfg: &Config, on_ready: Box<dyn Fn() + Send + Sync>) -> Self {
+        let on_ready: Arc<dyn Fn() + Send + Sync> = Arc::from(on_ready);
+        let artists = cfg.artists_online.then(|| {
+            let on_ready = Arc::clone(&on_ready);
+            ArtistFetcher::new(ArtistConfig::standard(true), Box::new(move || on_ready()))
+        });
         let (req_tx, req_rx) = mpsc::channel::<Request>();
         let (res_tx, res_rx) = mpsc::channel();
 
@@ -133,14 +149,15 @@ impl ArtLoader {
             .spawn(move || {
                 while let Ok(req) = req_rx.recv() {
                     // Only the most recent request of each kind matters after rapid skips.
-                    let (mut art, mut thumb) = (None, None);
+                    let (mut art, mut thumb, mut artist) = (None, None, None);
                     for req in std::iter::once(req).chain(req_rx.try_iter()) {
                         match req {
                             Request::Art(_) => art = Some(req),
                             Request::Thumb(_) => thumb = Some(req),
+                            Request::Artist(..) => artist = Some(req),
                         }
                     }
-                    for req in [art, thumb].into_iter().flatten() {
+                    for req in [art, artist, thumb].into_iter().flatten() {
                         let loaded = match req {
                             Request::Art(song) => {
                                 let images = worker.load(&song);
@@ -150,6 +167,9 @@ impl ArtLoader {
                             Request::Thumb(song) => {
                                 let image = worker.thumb(&song);
                                 Loaded::Thumb(art_key(&song), image)
+                            }
+                            Request::Artist(key, artist) => {
+                                Loaded::Artist(key, artist_image(&artist))
                             }
                         };
                         if res_tx.send(loaded).is_err() {
@@ -167,6 +187,8 @@ impl ArtLoader {
             tx: req_tx,
             rx: res_rx,
             requested: RefCell::new(None),
+            requested_artist: RefCell::new(String::new()),
+            artists,
             requested_thumb: RefCell::new(None),
             current: None,
             previous: None,
@@ -183,8 +205,25 @@ impl ArtLoader {
             return;
         }
         *requested = Some(key);
+        *self.requested_artist.borrow_mut() = song.artist.clone();
         if self.tx.send(Request::Art(song.clone())).is_err() {
             warn!("art loader thread is gone");
+        }
+    }
+
+    /// Starts an online lookup of the artist image for `song` when online lookups are on and
+    /// its art, once loaded, has none. The lookup runs once per artist; when it downloads an
+    /// image while `song` is current, the image cross-fades in.
+    pub fn want_artist_image(&self, song: &SongInfo) {
+        let Some(artists) = &self.artists else {
+            return;
+        };
+        let has_image = self
+            .current
+            .as_ref()
+            .is_some_and(|art| art.song_file == song.file && art.artist_bg.is_some());
+        if !has_image {
+            artists.request(&song.artist);
         }
     }
 
@@ -205,6 +244,18 @@ impl ArtLoader {
     /// Uploads finished images as textures. Returns true if the current art changed.
     pub fn poll(&mut self, ctx: &egui::Context) -> bool {
         let mut changed = false;
+        for (artist, fetched) in self.artists.iter().flat_map(ArtistFetcher::poll) {
+            let requested = self.requested.borrow();
+            let artist_tag = self.requested_artist.borrow();
+            if let (Fetched::Downloaded(_), Some(key)) = (fetched, requested.as_ref()) {
+                if first_artist(&artist_tag) == artist {
+                    let req = Request::Artist(key.clone(), artist_tag.clone());
+                    if self.tx.send(req).is_err() {
+                        warn!("art loader thread is gone");
+                    }
+                }
+            }
+        }
         while let Ok(loaded) = self.rx.try_recv() {
             match loaded {
                 Loaded::Art(key, images) => {
@@ -221,6 +272,27 @@ impl ArtLoader {
                         self.thumb = Some(upload_thumb(ctx, &key.0, image));
                     }
                 }
+                Loaded::Artist(key, Some((image, brightness))) => {
+                    let Some(current) = self.current.as_ref().filter(|art| {
+                        self.requested.borrow().as_ref() == Some(&key)
+                            && art.song_file == key.0
+                            && art.artist_bg.is_none()
+                    }) else {
+                        continue;
+                    };
+                    // The same art with the artist image, cross-faded in like a new song.
+                    let mut textures = current.clone();
+                    textures.artist_bg = Some(ctx.load_texture(
+                        format!("artist:{}", key.0),
+                        image,
+                        TextureOptions::LINEAR,
+                    ));
+                    textures.artist_brightness = brightness;
+                    self.previous = self.current.replace(textures);
+                    self.changed_at = Some(Instant::now());
+                    changed = true;
+                }
+                Loaded::Artist(_, None) => {}
             }
         }
         changed
@@ -337,10 +409,10 @@ impl Worker {
             cover
         };
         let small = cover.thumbnail(BACKDROP_SMALL, BACKDROP_SMALL).to_rgba8();
-        let artist = artist_background(&song.artist);
-        let artist_brightness = artist.as_ref().map_or(0.5, |img| {
-            brightness(&img.thumbnail(PALETTE_SAMPLE, PALETTE_SAMPLE).to_rgba8())
-        });
+        let (artist_bg, artist_brightness) = match artist_image(&song.artist) {
+            Some((img, brightness)) => (Some(img), brightness),
+            None => (None, 0.5),
+        };
 
         ArtImages {
             artist_brightness,
@@ -351,14 +423,7 @@ impl Worker {
             scheme: Scheme::from_art(average_color(&small)),
             palette: palette(&imageops::thumbnail(&small, PALETTE_SAMPLE, PALETTE_SAMPLE)),
             cover: to_color_image(&cover.to_rgba8()),
-            artist_bg: artist.map(|img| {
-                let img = if img.width().max(img.height()) > ARTIST_BG_MAX {
-                    img.resize(ARTIST_BG_MAX, ARTIST_BG_MAX, FilterType::Triangle)
-                } else {
-                    img
-                };
-                to_color_image(&img.to_rgba8())
-            }),
+            artist_bg,
         }
     }
 
@@ -431,37 +496,40 @@ fn data_uri_bytes(uri: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// First artist of a multi-artist tag, lowercased to match the artist image file names.
-pub fn first_artist(artist: &str) -> String {
-    [", ", "/", " & ", "; "]
-        .iter()
-        .fold(artist, |name, sep| name.split(sep).next().unwrap_or(name))
-        .trim()
-        .to_lowercase()
+/// Existing image files for the first artist of `artist`: the artists folder's (see
+/// [`encore::paths::artists_dir`]), then downloaded ones (see
+/// [`encore::paths::artist_cache_dir`]).
+fn artist_image_paths(artist: &str) -> Vec<PathBuf> {
+    encore::artists::image_paths(
+        &encore::paths::artists_dir(),
+        encore::paths::artist_cache_dir().as_deref(),
+        artist,
+    )
 }
 
-/// Candidate files of the artist image for `artist`, existing ones only.
-fn artist_image_paths(artist: &str) -> impl Iterator<Item = PathBuf> {
-    let name = first_artist(artist);
-    let names = if name.is_empty() {
-        0
-    } else {
-        ARTIST_EXTENSIONS.len()
-    };
-    let dir = encore::paths::artists_dir();
-    ARTIST_EXTENSIONS[..names]
-        .iter()
-        .map(move |ext| dir.join(format!("{name}.{ext}")))
-        .filter(|path| path.is_file())
-}
-
-/// Whether the artists folder (see [`encore::paths::artists_dir`]) has an image for the first artist of `artist`.
+/// Whether the artists folder or the download cache has an image for the first artist of
+/// `artist`.
 pub fn has_artist_image(artist: &str) -> bool {
-    artist_image_paths(artist).next().is_some()
+    !artist_image_paths(artist).is_empty()
 }
 
 fn artist_background(artist: &str) -> Option<DynamicImage> {
-    artist_image_paths(artist).find_map(|path| load_file(&path))
+    artist_image_paths(artist)
+        .iter()
+        .find_map(|path| load_file(path))
+}
+
+/// The artist image of `artist` scaled to at most [`ARTIST_BG_MAX`], with its mean relative
+/// luminance.
+fn artist_image(artist: &str) -> Option<(ColorImage, f32)> {
+    let img = artist_background(artist)?;
+    let brightness = brightness(&img.thumbnail(PALETTE_SAMPLE, PALETTE_SAMPLE).to_rgba8());
+    let img = if img.width().max(img.height()) > ARTIST_BG_MAX {
+        img.resize(ARTIST_BG_MAX, ARTIST_BG_MAX, FilterType::Triangle)
+    } else {
+        img
+    };
+    Some((to_color_image(&img.to_rgba8()), brightness))
 }
 
 fn load_file(path: &Path) -> Option<DynamicImage> {
@@ -697,15 +765,6 @@ fn to_color_image(img: &RgbaImage) -> ColorImage {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn first_artist_splits_and_lowercases() {
-        assert_eq!(first_artist("Quality Control, Lil Baby"), "quality control");
-        assert_eq!(first_artist("OutKast/Sleepy Brown"), "outkast");
-        assert_eq!(first_artist("Mariah Carey & Boyz II Men"), "mariah carey");
-        assert_eq!(first_artist("NF; Hopsin"), "nf");
-        assert_eq!(first_artist(""), "");
-    }
 
     #[test]
     fn data_uris() {

@@ -7,6 +7,7 @@ Startup settings live in `~/.config/encore/config.toml` (`$XDG_CONFIG_HOME/encor
 layout = "encore-classic"   # encore-classic | classic | vibrant
 lyrics = true
 lyrics_online = true        # LRCLIB and KuGou lookups
+artists_online = true       # TheAudioDB and Deezer artist image lookups
 lyrics_align = "right-left" # left | center | right | right-left
 lyrics_flow = "scrolling"   # classic | stacked | scrolling
 motion = true
@@ -43,6 +44,7 @@ Environment variables override the [configuration file](#configuration-file). Th
 | `ENCORE_SKIP_BUTTONS` | `on` or `off`: previous/next buttons beside the Encore Classic layout's progress bar. Defaults to `on`. |
 | `ENCORE_LYRICS_ALIGN` | `left`, `center`, `right` or `right-left` (the right-hand column with left-aligned lines): alignment of the Encore Classic layout's lyrics. Defaults to `right`. |
 | `ENCORE_LYRICS_FLOW` | `classic`, `stacked` or `scrolling`: how the Encore Classic layout's synced lyrics move. Defaults to `stacked`. |
+| `ENCORE_ARTISTS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable online [artist image](artist-backgrounds.md) lookups (TheAudioDB and Deezer). Enabled by default. |
 | `ENCORE_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable online lookups (LRCLIB and KuGou) and the lyrics manager's search. Enabled by default. |
 | `ENCORE_SOURCE` | `auto`, `mpd` or `mpris` (case-insensitive): [where playback is read from](players.md#source). Defaults to `auto`. |
 | `ENCORE_MPRIS_PLAYER` | Case-insensitive part of an MPRIS player's name (for example `spotify`, `firefox`, `vlc` or `mpv`) to follow. Defaults to any player. |

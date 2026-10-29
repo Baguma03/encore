@@ -151,6 +151,8 @@ pub struct Config {
     pub layout: Layout,
     pub lyrics_enabled: bool,
     pub lyrics_online: bool,
+    /// Look up artist images missing locally on TheAudioDB and Deezer.
+    pub artists_online: bool,
     /// Animated backdrop behind the Classic and Vibrant layouts.
     pub motion: bool,
     /// `ENCORE_ARTIST_BG` or `artist_bg` for every layout; see [`Config::artist_bg`].
@@ -296,6 +298,7 @@ impl Config {
             layout,
             lyrics_enabled: get("ENCORE_LYRICS").is_none_or(|v| !is_off(&v)),
             lyrics_online: get("ENCORE_LYRICS_ONLINE").is_none_or(|v| !is_off(&v)),
+            artists_online: get("ENCORE_ARTISTS_ONLINE").is_none_or(|v| !is_off(&v)),
             motion: get("ENCORE_MOTION").is_none_or(|v| !is_off(&v)),
             artist_bg: get("ENCORE_ARTIST_BG").map(|v| !is_off(&v)),
             tint: get("ENCORE_TINT").is_none_or(|v| !is_off(&v)),
@@ -447,6 +450,7 @@ mod tests {
         assert_eq!(cfg.layout, Layout::EncoreClassic);
         assert!(cfg.lyrics_enabled);
         assert!(cfg.lyrics_online);
+        assert!(cfg.artists_online);
         assert!(cfg.motion);
         assert!(cfg.tint);
         assert!(cfg.skip_buttons);
@@ -612,6 +616,21 @@ mod tests {
         assert_eq!(cfg.layout, Layout::EncoreClassic);
         assert!(cfg.lyrics_enabled);
         assert!(!cfg.lyrics_online);
+    }
+
+    #[test]
+    fn online_artist_images_switch() {
+        assert!(!parse(&[("ENCORE_ARTISTS_ONLINE", "0")]).artists_online);
+        assert!(!parse(&[("ENCORE_ARTISTS_ONLINE", "off")]).artists_online);
+        assert!(!parse(&[("MPD_DISPLAY_ARTISTS_ONLINE", "no")]).artists_online);
+        let cfg = parse(&[
+            ("ENCORE_ARTISTS_ONLINE", "false"),
+            ("ENCORE_LYRICS_ONLINE", "on"),
+        ]);
+        assert!(!cfg.artists_online);
+        assert!(cfg.lyrics_online);
+        assert!(parse(&[("ENCORE_ARTISTS_ONLINE", "on")]).artists_online);
+        assert!(parse(&[("ENCORE_LYRICS_ONLINE", "off")]).artists_online);
     }
 
     #[test]

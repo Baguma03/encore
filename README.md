@@ -14,7 +14,7 @@ Encore is a fullscreen now-playing display for Linux. It follows [MPD](https://w
 - Time-synced [lyrics](docs/lyrics.md) from local files, a cache, LRCLIB or KuGou
 - A [lyrics manager](docs/lyrics.md#lyrics-manager) for searching, importing, editing and re-timing lyrics, with a tap-to-sync view
 - [Lyric clip export](docs/export.md) as share-ready MP4s in 16:9, 9:16 and 1:1
-- [Artist background images](docs/artist-backgrounds.md)
+- [Artist background images](docs/artist-backgrounds.md) from a local folder, TheAudioDB or Deezer
 - Works with [MPD or any MPRIS player](docs/players.md), switching between them as they come and go and reconnecting automatically
 - Native Wayland and X11 windows that rescale to any size
 - [Configuration file and environment variables](docs/configuration.md)
@@ -42,7 +42,7 @@ git clone https://github.com/Baguma03/encore
 cd encore
 cargo build --release
 ```
-The binary is `target/release/encore`. Artist background images go in `~/.local/share/encore/artists/` (see [Artist backgrounds](docs/artist-backgrounds.md)) and local lyric files in `~/.local/share/encore/lyrics/` (see [Lyrics](docs/lyrics.md)). To install the binary, run:
+The binary is `target/release/encore`. Artist background images are downloaded automatically; images added by hand go in `~/.local/share/encore/artists/` (see [Artist backgrounds](docs/artist-backgrounds.md)). Local lyric files go in `~/.local/share/encore/lyrics/` (see [Lyrics](docs/lyrics.md)). To install the binary, run:
 ```
 cargo install --path .
 ```
@@ -117,4 +117,4 @@ MIT — see [LICENSE](LICENSE).
 ## Credits
 Encore began as a fork of mpd-display-rs by Allison Linhart, original repository has since been taken down.
 
-Built with [eframe/egui](https://crates.io/crates/eframe), the [mpd](https://crates.io/crates/mpd) crate and [zbus](https://crates.io/crates/zbus). Online lyrics come from [LRCLIB](https://lrclib.net) and KuGou.
+Built with [eframe/egui](https://crates.io/crates/eframe), the [mpd](https://crates.io/crates/mpd) crate and [zbus](https://crates.io/crates/zbus). Online lyrics come from [LRCLIB](https://lrclib.net) and KuGou, and artist images from [TheAudioDB](https://www.theaudiodb.com) and [Deezer](https://www.deezer.com).

@@ -34,6 +34,10 @@ pub const STARTER: &str = r#"# Encore configuration.
 # Look lyrics up on LRCLIB when there is no local file.
 # lyrics_online = true
 
+# Look artist background images up on TheAudioDB and Deezer when there is no image in the
+# artists folder.
+# artists_online = true
+
 # Encore Classic layout lyrics alignment: "left", "center", "right" or "right-left" (the right-hand
 # column with left-aligned lines).
 # lyrics_align = "right"
@@ -128,6 +132,7 @@ const TOP_KEYS: &[(&str, &str, Kind)] = &[
     ),
     ("lyrics", "ENCORE_LYRICS", Kind::Bool),
     ("lyrics_online", "ENCORE_LYRICS_ONLINE", Kind::Bool),
+    ("artists_online", "ENCORE_ARTISTS_ONLINE", Kind::Bool),
     (
         "lyrics_align",
         "ENCORE_LYRICS_ALIGN",
@@ -225,6 +230,7 @@ mod tests {
             layout = "Encore-Classic"
             lyrics = false
             lyrics_online = false
+            artists_online = false
             lyrics_align = "right-left"
             lyrics_flow = "scrolling"
             motion = false
@@ -246,6 +252,7 @@ mod tests {
             ("ENCORE_LAYOUT", "encore-classic"),
             ("ENCORE_LYRICS", "off"),
             ("ENCORE_LYRICS_ONLINE", "off"),
+            ("ENCORE_ARTISTS_ONLINE", "off"),
             ("ENCORE_LYRICS_ALIGN", "right-left"),
             ("ENCORE_LYRICS_FLOW", "scrolling"),
             ("ENCORE_MOTION", "off"),

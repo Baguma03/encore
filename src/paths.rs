@@ -1,4 +1,5 @@
-//! Folders of user-provided files under the XDG data directory.
+//! Folders of user-provided files under the XDG data directory, and of downloads under the XDG
+//! cache directory.
 
 use std::path::PathBuf;
 
@@ -22,6 +23,12 @@ pub fn manual_lyrics_dir() -> PathBuf {
     lyrics_dir().join("manual")
 }
 
+/// `<cache dir>/encore/artists`: downloaded artist background images and not-found markers.
+/// `None` when there is no cache directory.
+pub fn artist_cache_dir() -> Option<PathBuf> {
+    dirs::cache_dir().map(|d| d.join("encore").join("artists"))
+}
+
 fn data_subdir(name: &str) -> PathBuf {
     dirs::data_dir().map_or_else(
         || PathBuf::from(".").join(name),
@@ -42,5 +49,8 @@ mod tests {
         assert_eq!(artists_dir(), data.join("encore/artists"));
         assert_eq!(lyrics_dir(), data.join("encore/lyrics"));
         assert_eq!(manual_lyrics_dir(), data.join("encore/lyrics/manual"));
+        if let Some(cache) = dirs::cache_dir() {
+            assert_eq!(artist_cache_dir(), Some(cache.join("encore/artists")));
+        }
     }
 }

@@ -1,3 +1,4 @@
+pub mod artists;
 pub mod file_drop;
 pub mod lyrics;
 pub mod paths;

@@ -736,6 +736,9 @@ impl eframe::App for App {
         self.handle_keys(&ctx, &state);
         if let Some(song) = &state.current {
             self.art.request(song);
+            if self.artist_bg_for(self.layout) {
+                self.art.want_artist_image(song);
+            }
         }
         if let Some(next) = &state.next {
             self.art.request_next(next);
