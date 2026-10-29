@@ -3259,6 +3259,7 @@ mod snapshot {
             LyricsConfig {
                 music_dir: None,
                 local_dir: dir.join("local"),
+                manual_dir: dir.join("local/manual"),
                 cache_dir: Some(cache),
                 online: false,
             },

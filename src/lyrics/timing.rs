@@ -10,7 +10,8 @@ use super::{LyricLine, Lyrics};
 /// same recording and are ignored.
 const STRETCH_RANGE: std::ops::RangeInclusive<f64> = 0.25..=4.0;
 
-/// Timing adjustments for one song, stored as JSON next to its manual override.
+/// Timing adjustments for one song, stored as JSON in the manual lyrics folder next to its
+/// manual override.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Adjustments {

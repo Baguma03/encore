@@ -1,11 +1,11 @@
 # Artist backgrounds
 
-The layouts can use an image of the song's artist as their background (toggle with `a`; see [Layouts](layouts.md)). Encore reads these images from an `artists/` folder in the directory it is started from. Without an image for the artist, each layout falls back to its own backdrop.
+The layouts can use an image of the song's artist as their background (toggle with `a`; see [Layouts](layouts.md)). Encore reads these images from `~/.local/share/encore/artists/` (`$XDG_DATA_HOME/encore/artists/` when `XDG_DATA_HOME` is set). Encore does not create this folder; create it and add images to it. Without an image for the artist, each layout falls back to its own backdrop.
 
 ## File names
 Name each file after the artist in all lowercase: `<artist name>.jpg`. The extensions `.jpg`, `.jpeg`, `.png` and `.webp` are recognised.
 
-For example, `artists/kendrick lamar.jpg` is used for songs by Kendrick Lamar.
+For example, `~/.local/share/encore/artists/kendrick lamar.jpg` is used for songs by Kendrick Lamar.
 
 ## Artist name parsing
 Encore looks up the first artist in the song's artist tag. Artists are separated in the tag by `, `, `/`, ` & ` or `; ` (each with the spaces shown); everything from the first separator on is ignored, and the remaining name is lowercased and trimmed. For example, `Quality Control; Lil Baby` looks for `quality control.jpg`.
@@ -25,4 +25,4 @@ Spotify's fullscreen mode uses a slightly darkened version of the main artist's 
 
    ![The copied i.scdn.co link](images/artist-image-link.png)
 
-5. Open the link in the browser, then save the image to the `artists/` folder as `<lowercase artist name>.jpg`.
+5. Open the link in the browser, then save the image to the artists folder as `<lowercase artist name>.jpg`.

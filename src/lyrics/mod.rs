@@ -178,8 +178,9 @@ pub struct LyricsConfig {
     pub music_dir: Option<PathBuf>,
     /// Folder of `<artist> - <title>.lrc` files.
     pub local_dir: PathBuf,
-    /// Cache of downloaded lyrics and not-found markers; also holds manual overrides and
-    /// timing adjustments under `manual/`.
+    /// Folder of lyrics saved in the lyrics manager and per-song timing adjustments.
+    pub manual_dir: PathBuf,
+    /// Cache of downloaded lyrics and not-found markers.
     pub cache_dir: Option<PathBuf>,
     /// Enables online lookups.
     pub online: bool,
@@ -397,18 +398,14 @@ impl LyricsProvider {
 
     /// Whether the song has manually saved lyrics.
     pub fn has_override(&self, key: &SongKey) -> bool {
-        self.shared
-            .config
-            .cache_dir
-            .as_deref()
-            .is_some_and(|dir| manual::has_override(dir, key))
+        manual::has_override(&self.shared.config.manual_dir, key)
     }
 
     /// Saves `text` (LRC or plain text) as the song's lyrics, ahead of every other source,
-    /// and shows it at once with the song's timing adjustments. Fails when there is no cache
-    /// directory, the text holds no lyrics, or the file cannot be written.
+    /// and shows it at once with the song's timing adjustments. Fails when the text holds no
+    /// lyrics or the file cannot be written.
     pub fn save_override(&self, key: &SongKey, text: &str) -> io::Result<()> {
-        let dir = self.cache_dir()?;
+        let dir = self.manual_dir();
         let lyrics = manual::write_override(dir, key, text)?;
         let adj = manual::read_adjustments(dir, key);
         let raw = Raw {
@@ -430,7 +427,7 @@ impl LyricsProvider {
 
     /// Removes the song's manual lyrics and looks the song up again.
     pub fn delete_override(&self, key: &SongKey) -> io::Result<()> {
-        manual::delete_override(self.cache_dir()?, key)?;
+        manual::delete_override(self.manual_dir(), key)?;
         self.reload(key);
         Ok(())
     }
@@ -440,17 +437,12 @@ impl LyricsProvider {
         if let Some(info) = self.info(key) {
             return info.adjustments;
         }
-        self.shared
-            .config
-            .cache_dir
-            .as_deref()
-            .map(|dir| manual::read_adjustments(dir, key))
-            .unwrap_or_default()
+        manual::read_adjustments(self.manual_dir(), key)
     }
 
     /// Saves the song's timing adjustments and applies them to its shown lyrics at once.
     pub fn set_adjustments(&self, key: &SongKey, adj: Adjustments) -> io::Result<()> {
-        manual::write_adjustments(self.cache_dir()?, key, adj)?;
+        manual::write_adjustments(self.manual_dir(), key, adj)?;
         let mut q = self.shared.lock();
         if let Some(slot) = q.slots.get_mut(key) {
             if let Some(raw) = &slot.raw {
@@ -462,12 +454,8 @@ impl LyricsProvider {
         Ok(())
     }
 
-    fn cache_dir(&self) -> io::Result<&Path> {
-        self.shared
-            .config
-            .cache_dir
-            .as_deref()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no lyrics cache directory"))
+    fn manual_dir(&self) -> &Path {
+        &self.shared.config.manual_dir
     }
 
     fn enqueue(&self, key: &SongKey, high: bool) {
@@ -558,8 +546,8 @@ fn worker_loop(shared: &Shared, agent: Option<&ureq::Agent>, on_ready: &(dyn Fn(
         };
 
         let result = sources::lookup(config, &key, agent);
-        let adj = match (&result, config.cache_dir.as_deref()) {
-            (sources::Lookup::Found(_), Some(dir)) => manual::read_adjustments(dir, &key),
+        let adj = match &result {
+            sources::Lookup::Found(_) => manual::read_adjustments(&config.manual_dir, &key),
             _ => Adjustments::default(),
         };
 
@@ -658,6 +646,7 @@ mod tests {
             LyricsConfig {
                 music_dir: None,
                 local_dir: dir.join("local"),
+                manual_dir: dir.join("local/manual"),
                 cache_dir: Some(dir.join("cache")),
                 online: false,
             },

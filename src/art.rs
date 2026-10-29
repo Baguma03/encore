@@ -19,7 +19,6 @@ use crate::player::{file_url_path, Origin, SongInfo};
 use crate::ui::scheme::Scheme;
 
 const BACKUP_ART_PATH: &str = "./assets/art_backup";
-const ARTISTS_DIR: &str = "./artists";
 const ARTIST_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
 
 const COVER_MAX: u32 = 1024;
@@ -432,7 +431,7 @@ fn data_uri_bytes(uri: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// First artist of a multi-artist tag, lowercased to match `artists/` file names.
+/// First artist of a multi-artist tag, lowercased to match the artist image file names.
 pub fn first_artist(artist: &str) -> String {
     [", ", "/", " & ", "; "]
         .iter()
@@ -449,13 +448,14 @@ fn artist_image_paths(artist: &str) -> impl Iterator<Item = PathBuf> {
     } else {
         ARTIST_EXTENSIONS.len()
     };
+    let dir = encore::paths::artists_dir();
     ARTIST_EXTENSIONS[..names]
         .iter()
-        .map(move |ext| PathBuf::from(ARTISTS_DIR).join(format!("{name}.{ext}")))
+        .map(move |ext| dir.join(format!("{name}.{ext}")))
         .filter(|path| path.is_file())
 }
 
-/// Whether `artists/` has an image for the first artist of `artist`.
+/// Whether the artists folder (see [`encore::paths::artists_dir`]) has an image for the first artist of `artist`.
 pub fn has_artist_image(artist: &str) -> bool {
     artist_image_paths(artist).next().is_some()
 }

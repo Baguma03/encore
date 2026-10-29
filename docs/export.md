@@ -17,7 +17,7 @@ Press `e` to open the export panel. It has two columns: **Clip** on the left for
 The **Style** chips (**Classic**, **Vibrant** and **Encore Classic**) choose the look of the clip: the dark Classic layout over blurred art, the colourful Vibrant layout, or the Encore Classic layout (with the next song in the corner when the clip reaches the last 10% of the song). The panel starts on the style of the layout on screen. Everything else in the section starts at the display's current setting:
 - **Lyrics** (**Left**, **Center**, **Right**) and **Flow** (**Classic**, **Stacked**): the Encore Classic style's lyric alignment and flow; disabled for the other styles.
 - **Motion**: the moving backdrop, or a still one when off.
-- **Artist background**: the artist image as the background; it starts at the live setting of the chosen style's layout and is disabled, with a note, when the `artists/` folder has no image for the song's artist.
+- **Artist background**: the artist image as the background; it starts at the live setting of the chosen style's layout and is disabled, with a note, when the [artists folder](artist-backgrounds.md) has no image for the song's artist.
 - **Album colours**: [album colours](layouts.md#album-colours), or the plain look when off.
 
 Encore Classic clips also follow the display's skip-button setting (`s`).

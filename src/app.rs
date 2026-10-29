@@ -17,7 +17,6 @@ use crate::ui::{self, ArtView, View};
 
 const PLAYING_FRAME: Duration = Duration::from_millis(33);
 const IDLE_TICK: Duration = Duration::from_secs(1);
-const LYRICS_DIR: &str = "./lyrics";
 
 const MARK_TOAST: Duration = Duration::from_secs(2);
 const SAVED_TOAST: Duration = Duration::from_secs(8);
@@ -267,7 +266,8 @@ impl App {
         let lyrics = LyricsProvider::new(
             LyricsConfig {
                 music_dir: config.music_dir.clone(),
-                local_dir: LYRICS_DIR.into(),
+                local_dir: encore::paths::lyrics_dir(),
+                manual_dir: encore::paths::manual_lyrics_dir(),
                 cache_dir: LyricsConfig::default_cache_dir(),
                 online: config.lyrics_online,
             },

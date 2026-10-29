@@ -42,7 +42,7 @@ git clone https://github.com/Baguma03/encore
 cd encore
 cargo build --release
 ```
-The binary is `target/release/encore`. Run it from the repository directory so that it finds the `artists/` and `lyrics/` folders next to it, or install it with:
+The binary is `target/release/encore`. Artist background images go in `~/.local/share/encore/artists/` (see [Artist backgrounds](docs/artist-backgrounds.md)) and local lyric files in `~/.local/share/encore/lyrics/` (see [Lyrics](docs/lyrics.md)). To install the binary, run:
 ```
 cargo install --path .
 ```

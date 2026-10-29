@@ -57,7 +57,7 @@ pub enum Lookup {
 /// cache.
 pub fn lookup(config: &LyricsConfig, key: &SongKey, agent: Option<&ureq::Agent>) -> Lookup {
     let cache_dir = config.cache_dir.as_deref();
-    if let Some((lyrics, text)) = cache_dir.and_then(|d| manual::read_override(d, key)) {
+    if let Some((lyrics, text)) = manual::read_override(&config.manual_dir, key) {
         return found(lyrics, Origin::Manual, text);
     }
     if let Some((lyrics, text)) = sidecar(config.music_dir.as_deref(), &key.file) {
@@ -486,6 +486,7 @@ pub(crate) mod tests {
         LyricsConfig {
             music_dir: Some(dir.join("music")),
             local_dir: dir.join("local"),
+            manual_dir: dir.join("local/manual"),
             cache_dir: Some(dir.join("cache")),
             online: false,
         }
@@ -638,6 +639,12 @@ pub(crate) mod tests {
         assert!(matches!(lookup(&cfg, &k, None), Lookup::Found(_)));
         let k = key("c.flac", "The Band", "Missing");
         assert_eq!(lookup(&cfg, &k, None), Lookup::NotFound);
+
+        // The manual folder inside the local folder is not part of the local lookup.
+        manual::write_override(&cfg.manual_dir, &k, "[00:01.00]m").unwrap();
+        assert!(cfg.manual_dir.starts_with(&cfg.local_dir));
+        assert!(local(&cfg.local_dir, &k).is_none());
+        assert_eq!(origin_of(lookup(&cfg, &k, None)), Origin::Manual);
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -712,7 +719,7 @@ pub(crate) mod tests {
         write_cache(&cache, &k, Provider::Lrclib, "cache");
         fs::write(cfg.local_dir.join("Artist - Song.lrc"), "local").unwrap();
         fs::write(dir.join("music/Song.lrc"), "sidecar").unwrap();
-        manual::write_override(&cache, &k, "manual").unwrap();
+        manual::write_override(&cfg.manual_dir, &k, "manual").unwrap();
 
         let first = |cfg: &LyricsConfig| match lyrics_of(lookup(cfg, &k, None)) {
             Lyrics::Plain(v) => v[0].clone(),
@@ -720,7 +727,7 @@ pub(crate) mod tests {
         };
         assert_eq!(first(&cfg), "manual");
         assert_eq!(origin_of(lookup(&cfg, &k, None)), Origin::Manual);
-        manual::delete_override(&cache, &k).unwrap();
+        manual::delete_override(&cfg.manual_dir, &k).unwrap();
         assert_eq!(first(&cfg), "sidecar");
         fs::remove_file(dir.join("music/Song.lrc")).unwrap();
         assert_eq!(first(&cfg), "local");
