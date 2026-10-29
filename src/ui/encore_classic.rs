@@ -11,8 +11,8 @@ use egui::{
 };
 use encore::lyrics::{Lyrics, LyricsState};
 
-use super::apple;
 use super::backdrop;
+use super::classic;
 use super::icons::{paint_icon, Icon};
 use super::lyrics_column::{self, INACTIVE_SCALE, LINE_EMPHASIS, SCROLL_RATE};
 use super::scheme::{mix, Scheme};
@@ -45,7 +45,7 @@ const PREVIOUS_ALPHA: f32 = 0.28;
 const NEXT_ALPHA: f32 = 0.35;
 /// Opacity of the line after the next one, barely visible below it.
 const AFTER_NEXT_ALPHA: f32 = 0.04;
-/// Size of the lines around the active one relative to it, as in the Apple layout.
+/// Size of the lines around the active one relative to it, as in the Classic layout.
 const SIDE_SCALE: f32 = 0.9;
 
 /// Height of the active lyric line's top above the album art, relative to the art's height.
@@ -156,8 +156,8 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
     let screen = ui.max_rect();
     let painter = ui.painter_at(screen);
     let block = Block::new(screen, view.skip_buttons);
-    let background =
-        (!view.capture).then(|| ui.interact(screen, Id::unique("spotify-layout"), Sense::click()));
+    let background = (!view.capture)
+        .then(|| ui.interact(screen, Id::unique("encore-classic-layout"), Sense::click()));
     let command = paint(ui, &painter, screen, &block, view);
     command.or_else(|| {
         background
@@ -177,7 +177,7 @@ fn paint(
     let origin = screen.min;
     let player = view.player;
     let scheme = view.scheme();
-    let id = Id::unique("spotify-controls");
+    let id = Id::unique("encore-classic-controls");
 
     painter.rect_filled(screen, 0.0, BACKGROUND);
 
@@ -192,7 +192,7 @@ fn paint(
 
     // Album art
     let art_rect = block.art;
-    apple::paint_art(painter, art_rect, view, ART_RADIUS);
+    classic::paint_art(painter, art_rect, view, ART_RADIUS);
 
     // Title and artist beside the art, clear of the play button.
     let (title, artist) = match &player.current {
@@ -424,7 +424,7 @@ fn paint_art_backdrop(ui: &egui::Ui, painter: &Painter, screen: Rect, view: &Vie
     if view.motion {
         let time = ui.input(|i| i.time);
         backdrop::paint_motion(painter, screen, &view.art, time, 1.0);
-        let wash = (apple::motion_darkening(brightness) + 0.15).min(0.75);
+        let wash = (classic::motion_darkening(brightness) + 0.15).min(0.75);
         painter.rect_filled(screen, 0.0, with_alpha(Color32::BLACK, wash));
     } else {
         let draw = |art: &ArtTextures, a: f32| {
@@ -640,7 +640,7 @@ fn paint_lyrics(
         return;
     }
     let synced = matches!(lyrics.as_ref(), Lyrics::Synced(_));
-    let id = Id::unique("spotify-lyrics").with(&song.file);
+    let id = Id::unique("encore-classic-lyrics").with(&song.file);
     let halign = lyrics_halign(view.lyrics_align);
     let lines = Lines {
         entries: &entries,
@@ -853,7 +853,7 @@ fn paint_scrolling(ui: &egui::Ui, painter: &Painter, rect: Rect, lines: &Lines, 
             continue;
         }
         let distance = i as isize - active as isize;
-        // The Apple layout's steps, which keep upcoming lines brighter than past ones.
+        // The Classic layout's steps, which keep upcoming lines brighter than past ones.
         let a = lerp(lyrics_column::line_alpha(distance), 1.0, emphasis);
         paint_edge_faded(painter, pos, &galley, with_alpha(color, a), 0.0, rect, base);
     }

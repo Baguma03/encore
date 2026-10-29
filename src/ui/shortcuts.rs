@@ -83,36 +83,44 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut(&[K(Key::Space), Click], "Play / pause", Playback),
     shortcut(
         &[K(Key::ArrowLeft), K(Key::ArrowRight)],
+        "Seek back / forward 5 s",
+        Playback,
+    ),
+    shortcut(
+        &[Shift(Key::Comma), Shift(Key::Period)],
         "Previous / next track",
         Playback,
     ),
-    shortcut(&[K(Key::L)], "Cycle layouts", Display),
+    shortcut(
+        &[K(Key::L), K(Key::H)],
+        "Cycle layouts / backwards",
+        Display,
+    ),
     shortcut(&[K(Key::F), K(Key::F11)], "Fullscreen", Display),
     shortcut(&[K(Key::T)], "Date and clock", Display),
     shortcut(&[K(Key::B)], "Moving backdrop", Display),
     shortcut(&[K(Key::A)], "Artist background", Display),
     shortcut(&[K(Key::K)], "Album colours", Display),
-    shortcut(&[K(Key::S)], "Skip buttons (Spotify)", Display),
+    shortcut(&[K(Key::S)], "Skip buttons (Encore Classic)", Display),
     shortcut(&[K(Key::C)], "Mouse cursor", Display),
     shortcut(&[K(Key::Y)], "Lyrics on / off", Lyrics),
     shortcut(&[Shift(Key::Y)], "Lyrics manager", Lyrics),
-    shortcut(&[K(Key::J)], "Lyric alignment (Spotify)", Lyrics),
-    shortcut(&[K(Key::O)], "Lyric flow (Spotify)", Lyrics),
+    shortcut(&[K(Key::J)], "Lyric alignment (Encore Classic)", Lyrics),
+    shortcut(&[K(Key::O)], "Lyric flow (Encore Classic)", Lyrics),
     shortcut(&[K(Key::E)], "Clip export panel", Export),
     shortcut(&[K(Key::OpenBracket)], "Mark clip in-point", Export),
     shortcut(&[K(Key::CloseBracket)], "Mark clip out-point", Export),
-    shortcut(
-        &[K(Key::Questionmark), K(Key::H)],
-        "Keyboard shortcuts",
-        App,
-    ),
+    shortcut(&[K(Key::Questionmark)], "Keyboard shortcuts", App),
     shortcut(&[K(Key::D)], "Debug window", App),
     shortcut(&[K(Key::Escape), K(Key::Q)], "Quit", App),
 ];
 
-/// Text on the key caps of an input: one cap, or one per key of a combination.
+/// Text on the key caps of an input: one cap, or one per key of a combination. Shift+, and
+/// Shift+. show as the `<` and `>` they type.
 fn caps(input: Input) -> Vec<&'static str> {
     match input {
+        Shift(Key::Comma) => vec!["<"],
+        Shift(Key::Period) => vec![">"],
         Shift(key) => vec!["Shift", label(K(key))],
         _ => vec![label(input)],
     }

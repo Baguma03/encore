@@ -10,23 +10,32 @@ const DEFAULT_PORT: u16 = 6600;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Layout {
-    Spotify,
-    Apple,
+    EncoreClassic,
+    Classic,
     Vibrant,
 }
 
 impl Layout {
-    /// The layout after this one in the cycle Apple → Vibrant → Spotify.
+    /// The layout after this one in the cycle Encore Classic → Classic → Vibrant.
     pub fn next(self) -> Self {
         match self {
-            Layout::Apple => Layout::Vibrant,
-            Layout::Vibrant => Layout::Spotify,
-            Layout::Spotify => Layout::Apple,
+            Layout::EncoreClassic => Layout::Classic,
+            Layout::Classic => Layout::Vibrant,
+            Layout::Vibrant => Layout::EncoreClassic,
+        }
+    }
+
+    /// The layout before this one in the cycle, the reverse of [`Layout::next`].
+    pub fn prev(self) -> Self {
+        match self {
+            Layout::EncoreClassic => Layout::Vibrant,
+            Layout::Classic => Layout::EncoreClassic,
+            Layout::Vibrant => Layout::Classic,
         }
     }
 }
 
-/// Horizontal alignment of the Spotify layout's lyrics.
+/// Horizontal alignment of the Encore Classic layout's lyrics.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum LyricsAlign {
     /// Left edge on the title's left edge.
@@ -69,7 +78,7 @@ impl LyricsAlign {
     }
 }
 
-/// How the Spotify layout's synced lyrics move.
+/// How the Encore Classic layout's synced lyrics move.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum LyricsFlow {
     /// Three lines: the previous one above the active one and the next one below.
@@ -119,9 +128,9 @@ pub enum Source {
 
 impl Config {
     /// Whether `layout` starts with the artist image as its background:
-    /// `ENCORE_ARTIST_BG` or `artist_bg` when set, else only for the Spotify layout.
+    /// `ENCORE_ARTIST_BG` or `artist_bg` when set, else only for the Encore Classic layout.
     pub fn artist_bg(&self, layout: Layout) -> bool {
-        self.artist_bg.unwrap_or(layout == Layout::Spotify)
+        self.artist_bg.unwrap_or(layout == Layout::EncoreClassic)
     }
 }
 
@@ -142,13 +151,13 @@ pub struct Config {
     pub layout: Layout,
     pub lyrics_enabled: bool,
     pub lyrics_online: bool,
-    /// Animated backdrop behind the Apple and Vibrant layouts.
+    /// Animated backdrop behind the Classic and Vibrant layouts.
     pub motion: bool,
     /// `ENCORE_ARTIST_BG` or `artist_bg` for every layout; see [`Config::artist_bg`].
     pub artist_bg: Option<bool>,
     /// Text, icons and bars take their colours from the album art.
     pub tint: bool,
-    /// Previous and next buttons at the ends of the Spotify layout's progress bar.
+    /// Previous and next buttons at the ends of the Encore Classic layout's progress bar.
     pub skip_buttons: bool,
     pub lyrics_align: LyricsAlign,
     pub lyrics_flow: LyricsFlow,
@@ -224,12 +233,12 @@ impl Config {
         };
 
         let layout = match get("ENCORE_LAYOUT").map(|v| v.to_lowercase()).as_deref() {
-            Some("spotify") => Layout::Spotify,
+            Some("encore-classic") | None => Layout::EncoreClassic,
+            Some("classic") => Layout::Classic,
             Some("vibrant") => Layout::Vibrant,
-            Some("apple") | None => Layout::Apple,
             Some(other) => {
-                warn!("unknown ENCORE_LAYOUT {other:?}, using apple");
-                Layout::Apple
+                warn!("unknown ENCORE_LAYOUT {other:?}, using encore-classic");
+                Layout::EncoreClassic
             }
         };
 
@@ -435,7 +444,7 @@ mod tests {
         assert_eq!(cfg.mpris_player, None);
         assert_eq!(cfg.music_dir, None);
         assert_eq!(cfg.export_dir, PathBuf::from("./encore"));
-        assert_eq!(cfg.layout, Layout::Apple);
+        assert_eq!(cfg.layout, Layout::EncoreClassic);
         assert!(cfg.lyrics_enabled);
         assert!(cfg.lyrics_online);
         assert!(cfg.motion);
@@ -482,19 +491,19 @@ mod tests {
         assert!(cfg.motion);
 
         let cfg = load(&[
-            ("ENCORE_LAYOUT", "spotify"),
+            ("ENCORE_LAYOUT", "encore-classic"),
             ("ENCORE_TINT", "on"),
             ("MPD_PORT", "6700"),
         ]);
-        assert_eq!(cfg.layout, Layout::Spotify);
+        assert_eq!(cfg.layout, Layout::EncoreClassic);
         assert!(cfg.tint);
         assert!(!cfg.clock);
         assert_eq!(cfg.mpd_host, "file.lan");
         assert_eq!(cfg.mpd_port, 6700);
 
         // A legacy variable still beats the file, and an empty variable does not.
-        let cfg = load(&[("MPD_DISPLAY_LAYOUT", "apple"), ("ENCORE_TINT", " ")]);
-        assert_eq!(cfg.layout, Layout::Apple);
+        let cfg = load(&[("MPD_DISPLAY_LAYOUT", "classic"), ("ENCORE_TINT", " ")]);
+        assert_eq!(cfg.layout, Layout::Classic);
         assert!(!cfg.tint);
     }
 
@@ -586,12 +595,12 @@ mod tests {
     #[test]
     fn layout_and_toggles() {
         let cfg = parse(&[
-            ("ENCORE_LAYOUT", "Spotify"),
+            ("ENCORE_LAYOUT", "Encore-Classic"),
             ("ENCORE_LYRICS", "off"),
             ("ENCORE_LYRICS_ONLINE", "0"),
             ("MPD_MUSIC_DIR", "/srv/music"),
         ]);
-        assert_eq!(cfg.layout, Layout::Spotify);
+        assert_eq!(cfg.layout, Layout::EncoreClassic);
         assert!(!cfg.lyrics_enabled);
         assert!(!cfg.lyrics_online);
         assert_eq!(cfg.music_dir, Some(PathBuf::from("/srv/music")));
@@ -600,7 +609,7 @@ mod tests {
             ("ENCORE_LAYOUT", "bogus"),
             ("ENCORE_LYRICS_ONLINE", "false"),
         ]);
-        assert_eq!(cfg.layout, Layout::Apple);
+        assert_eq!(cfg.layout, Layout::EncoreClassic);
         assert!(cfg.lyrics_enabled);
         assert!(!cfg.lyrics_online);
     }
@@ -609,25 +618,39 @@ mod tests {
     fn artist_background_defaults_and_override() {
         let cfg = parse(&[]);
         assert_eq!(cfg.artist_bg, None);
-        assert!(cfg.artist_bg(Layout::Spotify));
-        assert!(!cfg.artist_bg(Layout::Apple));
+        assert!(cfg.artist_bg(Layout::EncoreClassic));
+        assert!(!cfg.artist_bg(Layout::Classic));
         assert!(!cfg.artist_bg(Layout::Vibrant));
 
         let on = parse(&[("ENCORE_ARTIST_BG", "on")]);
-        assert!([Layout::Spotify, Layout::Apple, Layout::Vibrant]
+        assert!([Layout::EncoreClassic, Layout::Classic, Layout::Vibrant]
             .iter()
             .all(|&l| on.artist_bg(l)));
         let off = parse(&[("ENCORE_ARTIST_BG", "OFF")]);
-        assert!([Layout::Spotify, Layout::Apple, Layout::Vibrant]
+        assert!([Layout::EncoreClassic, Layout::Classic, Layout::Vibrant]
             .iter()
             .all(|&l| !off.artist_bg(l)));
     }
 
     #[test]
     fn layout_cycle() {
-        assert_eq!(Layout::Apple.next(), Layout::Vibrant);
-        assert_eq!(Layout::Vibrant.next(), Layout::Spotify);
-        assert_eq!(Layout::Spotify.next(), Layout::Apple);
+        assert_eq!(Layout::EncoreClassic.next(), Layout::Classic);
+        assert_eq!(Layout::Classic.next(), Layout::Vibrant);
+        assert_eq!(Layout::Vibrant.next(), Layout::EncoreClassic);
+        for layout in [Layout::EncoreClassic, Layout::Classic, Layout::Vibrant] {
+            assert_eq!(layout.next().prev(), layout);
+        }
+    }
+
+    #[test]
+    fn layout_names() {
+        let layout = |v| parse(&[("ENCORE_LAYOUT", v)]).layout;
+        assert_eq!(layout("classic"), Layout::Classic);
+        assert_eq!(layout("CLASSIC"), Layout::Classic);
+        assert_eq!(layout("encore-classic"), Layout::EncoreClassic);
+        assert_eq!(layout("vibrant"), Layout::Vibrant);
+        assert_eq!(layout("apple"), Layout::EncoreClassic);
+        assert_eq!(layout("spotify"), Layout::EncoreClassic);
     }
 
     #[test]
@@ -727,10 +750,10 @@ mod tests {
     #[test]
     fn new_variable_name_wins_over_legacy_name() {
         let cfg = parse(&[
-            ("ENCORE_LAYOUT", "spotify"),
+            ("ENCORE_LAYOUT", "encore-classic"),
             ("MPD_DISPLAY_LAYOUT", "vibrant"),
         ]);
-        assert_eq!(cfg.layout, Layout::Spotify);
+        assert_eq!(cfg.layout, Layout::EncoreClassic);
     }
 
     #[test]

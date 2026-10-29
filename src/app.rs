@@ -23,6 +23,8 @@ const MARK_TOAST: Duration = Duration::from_secs(2);
 const SAVED_TOAST: Duration = Duration::from_secs(8);
 const FAILED_TOAST: Duration = Duration::from_secs(10);
 const CANCELLED_TOAST: Duration = Duration::from_secs(3);
+/// How far ← and → seek within the song.
+const SEEK_STEP: Duration = Duration::from_secs(5);
 
 /// What a key press does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +35,7 @@ enum Action {
     TogglePause,
     Quit,
     Layout,
+    LayoutBack,
     Lyrics,
     Clock,
     Motion,
@@ -41,6 +44,8 @@ enum Action {
     SkipButtons,
     LyricsAlign,
     LyricsFlow,
+    SeekBack,
+    SeekForward,
     Previous,
     Next,
     OpenExport,
@@ -83,8 +88,9 @@ struct Open {
     typing: bool,
 }
 
-/// Maps a key press to its action. Shift matters only for `y`: Shift+Y opens the lyrics
-/// manager, `y` alone toggles the lyrics. While a text field has the keyboard no key acts, so
+/// Maps a key press to its action. Shift matters only for `y`, `,` and `.`: Shift+Y opens the
+/// lyrics manager, `y` alone toggles the lyrics, and Shift+, and Shift+. (`<` and `>`) go to the
+/// previous and next track while `,` and `.` alone do nothing. While a text field has the keyboard no key acts, so
 /// typing never triggers a shortcut; Escape then only leaves the field. While the lyrics
 /// manager or the export panel is open only closing it and fullscreen work, so keys meant for
 /// the panel never reach playback; the lyrics manager takes ←, → and P (and Alt with them)
@@ -119,6 +125,7 @@ fn key_action(press: Press, open: Open) -> Option<Action> {
         Key::Space => Action::TogglePause,
         Key::Escape | Key::Q => Action::Quit,
         Key::L => Action::Layout,
+        Key::H => Action::LayoutBack,
         Key::Y if shift => Action::OpenLyricsPanel,
         Key::Y => Action::Lyrics,
         Key::T => Action::Clock,
@@ -128,12 +135,14 @@ fn key_action(press: Press, open: Open) -> Option<Action> {
         Key::S => Action::SkipButtons,
         Key::J => Action::LyricsAlign,
         Key::O => Action::LyricsFlow,
-        Key::ArrowLeft => Action::Previous,
-        Key::ArrowRight => Action::Next,
+        Key::ArrowLeft => Action::SeekBack,
+        Key::ArrowRight => Action::SeekForward,
+        Key::Comma if shift => Action::Previous,
+        Key::Period if shift => Action::Next,
         Key::E => Action::OpenExport,
         Key::OpenBracket => Action::MarkIn,
         Key::CloseBracket => Action::MarkOut,
-        Key::Questionmark | Key::H => Action::Shortcuts,
+        Key::Questionmark => Action::Shortcuts,
         _ => return None,
     })
 }
@@ -146,6 +155,71 @@ fn pressed_key(key: Key, modifiers: Modifiers) -> Key {
     } else {
         key
     }
+}
+
+/// The presses among a frame's `events`. Repeats of a held key are left out. A `<` or `>`
+/// typed without a Comma or Period key event in the same frame stands for Shift+, or Shift+.,
+/// for keyboard layouts whose `<` and `>` keys egui reports as no key or another one.
+fn presses(events: &[Event]) -> Vec<Press> {
+    let mut presses: Vec<Press> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Key {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            } => Some(Press {
+                key: pressed_key(*key, *modifiers),
+                shift: modifiers.shift,
+            }),
+            _ => None,
+        })
+        .collect();
+    // Repeats count here, so holding the key does not repeat the typed character's action.
+    let has_key = |wanted: Key| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Key { key, pressed: true, .. } if *key == wanted))
+    };
+    for e in events {
+        let key = match e {
+            Event::Text(text) if text == "<" => Key::Comma,
+            Event::Text(text) if text == ">" => Key::Period,
+            _ => continue,
+        };
+        if !has_key(key) {
+            presses.push(Press { key, shift: true });
+        }
+    }
+    presses
+}
+
+/// Where the current song is: the target of a keyboard seek still on its way to the player,
+/// else the player's elapsed time. Seeks in quick succession thus add up.
+fn seek_position(state: &PlayerState, pending: Option<&PendingSeek>) -> Duration {
+    let elapsed = state.elapsed();
+    let file = state.current.as_ref().map(|s| s.file.as_str());
+    pending
+        .filter(|p| Some(p.file.as_str()) == file)
+        .and_then(|p| {
+            lyrics_panel::pending_position(
+                elapsed,
+                state.state == PlayState::Playing,
+                p.to,
+                p.at.elapsed(),
+            )
+        })
+        .unwrap_or(elapsed)
+}
+
+/// A keyboard seek sent to the player.
+struct PendingSeek {
+    /// The song it seeks within.
+    file: String,
+    to: Duration,
+    at: std::time::Instant,
 }
 
 pub struct App {
@@ -178,6 +252,7 @@ pub struct App {
     toasts: Toasts,
     show_shortcuts: bool,
     lyrics_panel: Option<LyricsPanel>,
+    pending_seek: Option<PendingSeek>,
 }
 
 impl App {
@@ -205,7 +280,7 @@ impl App {
             layout: config.layout,
             lyrics_enabled: config.lyrics_enabled,
             motion: config.motion,
-            artist_bg: [Layout::Spotify, Layout::Apple, Layout::Vibrant]
+            artist_bg: [Layout::EncoreClassic, Layout::Classic, Layout::Vibrant]
                 .into_iter()
                 .map(|l| (l, config.artist_bg(l)))
                 .collect(),
@@ -231,28 +306,12 @@ impl App {
             toasts,
             show_shortcuts: false,
             lyrics_panel: None,
+            pending_seek: None,
         }
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context, state: &PlayerState) {
-        let presses: Vec<Press> = ctx.input(|i| {
-            i.events
-                .iter()
-                .filter_map(|e| match e {
-                    Event::Key {
-                        key,
-                        pressed: true,
-                        repeat: false,
-                        modifiers,
-                        ..
-                    } => Some(Press {
-                        key: pressed_key(*key, *modifiers),
-                        shift: modifiers.shift,
-                    }),
-                    _ => None,
-                })
-                .collect()
-        });
+        let presses = ctx.input(|i| presses(&i.events));
         for press in presses {
             let lyrics = self.lyrics_panel.is_some();
             let open = Open {
@@ -285,6 +344,7 @@ impl App {
             Action::TogglePause => self.player.send(Command::TogglePause),
             Action::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
             Action::Layout => self.layout = self.layout.next(),
+            Action::LayoutBack => self.layout = self.layout.prev(),
             Action::Lyrics => self.lyrics_enabled = !self.lyrics_enabled,
             Action::Clock => self.show_clock = !self.show_clock,
             Action::Motion => self.motion = !self.motion,
@@ -296,6 +356,19 @@ impl App {
             Action::SkipButtons => self.skip_buttons = !self.skip_buttons,
             Action::LyricsAlign => self.lyrics_align = self.lyrics_align.next(),
             Action::LyricsFlow => self.lyrics_flow = self.lyrics_flow.next(),
+            Action::SeekBack | Action::SeekForward => {
+                if let Some(song) = &state.current {
+                    let from = seek_position(state, self.pending_seek.as_ref());
+                    let forward = action == Action::SeekForward;
+                    let to = lyrics_panel::seek_target(from, SEEK_STEP, forward, song.duration);
+                    self.player.send(Command::SeekTo(to));
+                    self.pending_seek = Some(PendingSeek {
+                        file: song.file.clone(),
+                        to,
+                        at: std::time::Instant::now(),
+                    });
+                }
+            }
             Action::Previous => self.player.send(Command::Previous),
             Action::Next => self.player.send(Command::Next),
             Action::OpenExport => {
@@ -403,9 +476,10 @@ impl App {
             .current
             .as_ref()
             .is_some_and(|s| s.lyrics_key() == key);
-        // The timing view docks away from the lyrics: right when the Spotify layout's lyrics
+        // The timing view docks away from the lyrics: right when the Encore Classic layout's lyrics
         // sit on the left, else left.
-        let dock_right = self.layout == Layout::Spotify && self.lyrics_align == LyricsAlign::Left;
+        let dock_right =
+            self.layout == Layout::EncoreClassic && self.lyrics_align == LyricsAlign::Left;
         let env = lyrics_panel::Env {
             provider: &self.lyrics,
             elapsed: playing.then(|| state.elapsed()),
@@ -557,8 +631,8 @@ impl App {
     fn draw_layout(&self, ui: &mut egui::Ui, state: &PlayerState, lyrics: LyricsState) {
         let view = self.view(state, lyrics);
         let cmd = match self.layout {
-            Layout::Spotify => ui::spotify::draw(ui, &view),
-            Layout::Apple => ui::apple::draw(ui, &view),
+            Layout::EncoreClassic => ui::encore_classic::draw(ui, &view),
+            Layout::Classic => ui::classic::draw(ui, &view),
             Layout::Vibrant => ui::vibrant::draw(ui, &view),
         };
         // The panels' backdrops and the shortcuts overlay block clicks; this guards against any
@@ -698,7 +772,7 @@ impl eframe::App for App {
             || progress.is_some()
             || !self.toasts.is_empty();
         // The moving backdrop keeps flowing while paused.
-        let moving = self.motion && self.layout != Layout::Spotify;
+        let moving = self.motion && self.layout != Layout::EncoreClassic;
         if state.state == PlayState::Playing || fading || overlays || moving {
             ctx.request_repaint_after(PLAYING_FRAME);
         } else {
@@ -744,6 +818,7 @@ mod tests {
             Key::ArrowRight,
             Key::Q,
             Key::L,
+            Key::H,
             Key::Y,
             Key::T,
             Key::B,
@@ -762,6 +837,70 @@ mod tests {
             assert_eq!(act(key, LYRICS), None, "{key:?}");
             assert!(act(key, NONE).is_some(), "{key:?}");
         }
+        for key in [Key::Comma, Key::Period] {
+            let press = Press::shift(key);
+            assert_eq!(key_action(press, EXPORT), None, "{key:?}");
+            assert_eq!(key_action(press, LYRICS), None, "{key:?}");
+            assert!(key_action(press, NONE).is_some(), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn arrows_seek_and_shifted_comma_and_period_change_track() {
+        assert_eq!(act(Key::ArrowLeft, NONE), Some(Action::SeekBack));
+        assert_eq!(act(Key::ArrowRight, NONE), Some(Action::SeekForward));
+        assert_eq!(act(Key::ArrowLeft, SHORTCUTS), Some(Action::SeekBack));
+        assert_eq!(
+            key_action(Press::shift(Key::Comma), NONE),
+            Some(Action::Previous)
+        );
+        assert_eq!(
+            key_action(Press::shift(Key::Period), NONE),
+            Some(Action::Next)
+        );
+        assert_eq!(
+            key_action(Press::shift(Key::Period), SHORTCUTS),
+            Some(Action::Next)
+        );
+        // Without Shift, , and . do nothing.
+        assert_eq!(act(Key::Comma, NONE), None);
+        assert_eq!(act(Key::Period, NONE), None);
+    }
+
+    #[test]
+    fn typed_angle_brackets_stand_for_shifted_comma_and_period() {
+        let key = |key, shift, repeat| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: if shift {
+                Modifiers::SHIFT
+            } else {
+                Modifiers::NONE
+            },
+        };
+        let text = |t: &str| Event::Text(t.into());
+        // The key event and the text it types make one press.
+        assert_eq!(
+            presses(&[key(Key::Comma, true, false), text("<")]),
+            [Press::shift(Key::Comma)]
+        );
+        assert_eq!(
+            presses(&[key(Key::Period, true, false), text(">")]),
+            [Press::shift(Key::Period)]
+        );
+        // Text alone, for layouts whose < and > keys egui does not report as Comma or Period.
+        assert_eq!(presses(&[text("<")]), [Press::shift(Key::Comma)]);
+        assert_eq!(presses(&[text(">")]), [Press::shift(Key::Period)]);
+        // A held key repeats neither as a key nor as text.
+        assert!(presses(&[key(Key::Comma, true, true), text("<")]).is_empty());
+        // Other text is no press.
+        assert!(presses(&[text(","), text("a")]).is_empty());
+        assert_eq!(
+            presses(&[key(Key::Slash, true, false), text("?")]),
+            [Press::shift(Key::Questionmark)]
+        );
     }
 
     #[test]
@@ -795,8 +934,12 @@ mod tests {
         assert_eq!(key_action(shift_y, EXPORT), None);
         assert_eq!(key_action(shift_y, LYRICS), Some(Action::CloseLyricsPanel));
         assert_eq!(act(Key::Y, LYRICS), None);
-        // Shift only matters for y.
+        // Shift does not matter for the other letters.
         assert_eq!(key_action(Press::shift(Key::L), NONE), Some(Action::Layout));
+        assert_eq!(
+            key_action(Press::shift(Key::H), NONE),
+            Some(Action::LayoutBack)
+        );
     }
 
     #[test]
@@ -824,8 +967,8 @@ mod tests {
             typing: true,
             ..LYRICS
         };
-        // Neither the app's previous / next track nor its play / pause act while the panel is
-        // open; the panel seeks and plays or pauses instead.
+        // Neither the app's seeking nor its play / pause act while the panel is open; the
+        // panel seeks and plays or pauses instead.
         for key in [Key::ArrowLeft, Key::ArrowRight, Key::P] {
             assert_eq!(act(key, LYRICS), None, "{key:?}");
             assert_eq!(act(key, typing), None, "{key:?}");
@@ -878,11 +1021,9 @@ mod tests {
 
     #[test]
     fn shortcuts_overlay_keys() {
-        for key in [Key::Questionmark, Key::H] {
-            assert_eq!(act(key, NONE), Some(Action::Shortcuts));
-            assert_eq!(act(key, SHORTCUTS), Some(Action::Shortcuts));
-            assert_eq!(act(key, EXPORT), None);
-        }
+        assert_eq!(act(Key::Questionmark, NONE), Some(Action::Shortcuts));
+        assert_eq!(act(Key::Questionmark, SHORTCUTS), Some(Action::Shortcuts));
+        assert_eq!(act(Key::Questionmark, EXPORT), None);
         assert_eq!(act(Key::Escape, SHORTCUTS), Some(Action::CloseShortcuts));
         assert_eq!(act(Key::Q, SHORTCUTS), Some(Action::Quit));
         let both = Open {
@@ -891,6 +1032,8 @@ mod tests {
         };
         assert_eq!(act(Key::Escape, both), Some(Action::CloseExport));
         assert_eq!(act(Key::L, SHORTCUTS), Some(Action::Layout));
+        assert_eq!(act(Key::H, SHORTCUTS), Some(Action::LayoutBack));
+        assert_eq!(act(Key::H, EXPORT), None);
     }
 
     #[test]

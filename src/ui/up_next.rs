@@ -8,7 +8,7 @@ use egui::epaint::RectShape;
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{Color32, FontId, Galley, Id, Painter, Pos2, Rect, Vec2};
 
-use super::apple::square_uv;
+use super::classic::square_uv;
 use super::scheme::Ink;
 use super::widgets::{ease, lerp, paint_text_shadow};
 use super::{font_bold, with_alpha, View};

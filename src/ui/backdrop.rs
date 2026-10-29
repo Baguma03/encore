@@ -1,4 +1,4 @@
-//! Animated backdrop shared by the Apple and Vibrant layouts: enlarged, blurred copies of the
+//! Animated backdrop shared by the Classic and Vibrant layouts: enlarged, blurred copies of the
 //! album art that drift, rotate and blend into one another, like Apple Music's moving artwork.
 
 use egui::emath::Rot2;

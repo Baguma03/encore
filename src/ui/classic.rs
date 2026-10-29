@@ -194,7 +194,7 @@ struct Placement {
 pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
     let screen = ui.max_rect();
     let ctx = ui.ctx().clone();
-    let id = Id::unique("apple-layout");
+    let id = Id::unique("classic-layout");
     let background = (!view.capture).then(|| ui.interact(screen, id, Sense::click()));
     let background_click = || {
         background

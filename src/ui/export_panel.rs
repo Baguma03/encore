@@ -613,7 +613,7 @@ impl ExportPanel {
                 row_label(ui, &t, "Size");
                 for aspect in Aspect::ALL {
                     let enabled = self.style.supports(aspect);
-                    let on = if self.style == Style::Spotify {
+                    let on = if self.style == Style::EncoreClassic {
                         enabled
                     } else {
                         formats.contains(&aspect)
@@ -629,14 +629,14 @@ impl ExportPanel {
             });
             ui.horizontal(|ui| {
                 row_label(ui, &t, "Lyrics");
-                let enabled = self.style == Style::Spotify;
+                let enabled = self.style == Style::EncoreClassic;
                 for align in LyricsAlign::ALL {
                     let on = self.lyrics_align == align;
                     let chip = chip(ui, &t, align.display_name(), on, enabled);
                     let chip = if enabled {
                         chip
                     } else {
-                        chip.on_hover_text("Spotify style only")
+                        chip.on_hover_text("Encore Classic style only")
                     };
                     if chip.clicked() {
                         self.lyrics_align = align;
@@ -645,14 +645,14 @@ impl ExportPanel {
             });
             ui.horizontal(|ui| {
                 row_label(ui, &t, "Flow");
-                let enabled = self.style == Style::Spotify;
+                let enabled = self.style == Style::EncoreClassic;
                 for flow in LyricsFlow::ALL {
                     let on = self.lyrics_flow == flow;
                     let chip = chip(ui, &t, flow.display_name(), on, enabled);
                     let chip = if enabled {
                         chip
                     } else {
-                        chip.on_hover_text("Spotify style only")
+                        chip.on_hover_text("Encore Classic style only")
                     };
                     if chip.clicked() {
                         self.lyrics_flow = flow;
@@ -718,8 +718,8 @@ impl ExportPanel {
                 }
             });
             let mut notes = Vec::new();
-            if self.style == Style::Spotify {
-                notes.push("Spotify style is 16:9 only.");
+            if self.style == Style::EncoreClassic {
+                notes.push("Encore Classic style is 16:9 only.");
             }
             if !self.has_artist_image {
                 notes.push("No artist image for this artist.");
@@ -1535,11 +1535,11 @@ mod snapshot {
     use crate::export::render::Renderer;
     use crate::player::{Origin, PlayState, PlayerState};
     use crate::ui::toasts::{Progress, Toast, Toasts};
-    use crate::ui::{apple, shortcuts, ArtView, View};
+    use crate::ui::{classic, shortcuts, ArtView, View};
 
-    /// Renders the panel and toasts over the Apple layout to the PNG named by
+    /// Renders the panel and toasts over the Classic layout to the PNG named by
     /// `ENCORE_EXPORT_PANEL_SNAPSHOT`, or `export-panel.png` in the temp folder.
-    /// `ENCORE_EXPORT_PANEL_STYLE=spotify` picks the Spotify style instead of Vibrant, and
+    /// `ENCORE_EXPORT_PANEL_STYLE=encore-classic` picks the Encore Classic style instead of Vibrant, and
     /// `ENCORE_EXPORT_PANEL_LYRICS=none` shows a song without lyrics.
     /// `ENCORE_EXPORT_PANEL_SONG=<file>` loads the art of that MPD file, which the layout and
     /// the panel take their colours from; `ENCORE_EXPORT_PANEL_TINT=off` turns album colours
@@ -1582,7 +1582,7 @@ mod snapshot {
             false,
             LiveLook {
                 style: match std::env::var("ENCORE_EXPORT_PANEL_STYLE").as_deref() {
-                    Ok("spotify") => Style::Spotify,
+                    Ok("encore-classic") => Style::EncoreClassic,
                     _ => Style::Vibrant,
                 },
                 motion: true,
@@ -1662,7 +1662,7 @@ mod snapshot {
                         lyrics_align: LyricsAlign::Right,
                         lyrics_flow: LyricsFlow::Stacked,
                     };
-                    apple::draw(ui, &view);
+                    classic::draw(ui, &view);
                     let ctx = ui.ctx().clone();
                     if shortcuts {
                         shortcuts::draw(&ctx, true, &theme);

@@ -3173,7 +3173,7 @@ mod snapshot {
     use crate::export::render::Renderer;
     use crate::player::{Origin as PlayerOrigin, PlayState, PlayerState};
     use crate::ui::toasts::Toasts;
-    use crate::ui::{apple, ArtView, View};
+    use crate::ui::{classic, ArtView, View};
 
     const LRC: &str = "[ar:Kendrick Lamar]\n[al:Mr. Morale & The Big Steppers]\n[ti:Rich Spirit]\n\
         [length:03:23.20]\n[00:06.49]Takin' my baby to school, then I pray for her\n\
@@ -3216,7 +3216,7 @@ mod snapshot {
         }
     }
 
-    /// Renders the lyrics manager over the Apple layout to the PNG named by
+    /// Renders the lyrics manager over the Classic layout to the PNG named by
     /// `ENCORE_LYRICS_PANEL_SNAPSHOT`, or `lyrics-panel.png` in the temp folder.
     /// `ENCORE_LYRICS_PANEL_STATE` picks what it shows: `results` (default), `searching`,
     /// `empty`, `offline`, `failed`, `file`, `timing`, `drop`, `live` for a real search, or the
@@ -3417,7 +3417,7 @@ mod snapshot {
                         lyrics_align: LyricsAlign::Right,
                         lyrics_flow: LyricsFlow::Stacked,
                     };
-                    apple::draw(ui, &view);
+                    classic::draw(ui, &view);
                     let ctx = ui.ctx().clone();
                     let out = panel.show(
                         &ctx,

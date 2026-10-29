@@ -7,8 +7,8 @@ use std::f32::consts::TAU;
 use egui::epaint::Mesh;
 use egui::{Align2, Color32, FontId, Id, Painter, Pos2, Rect, Sense, Shape, Vec2};
 
-use super::apple::{self, Meta, Orientation, COLUMN_SLIDE};
 use super::backdrop;
+use super::classic::{self, Meta, Orientation, COLUMN_SLIDE};
 use super::lyrics_column::{self, LyricsColumn};
 use super::scheme::Ink;
 use super::up_next::{self, UpNext};
@@ -199,7 +199,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         COLUMN_SLIDE,
     ));
     if clock_t > 0.0 {
-        apple::paint_clock(&painter, screen, view, clock_t, &ink);
+        classic::paint_clock(&painter, screen, view, clock_t, &ink);
     }
 
     let Some(song) = view.player.current.as_ref() else {
@@ -249,7 +249,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
         view,
         &up_next::Colors::from_ink(&ink, SUBTITLE_ALPHA, text_shadow(view)),
     );
-    apple::paint_art(&painter, place.art, view, ART_RADIUS);
+    classic::paint_art(&painter, place.art, view, ART_RADIUS);
     paint_info(ui, &painter, id, view, song, &place.info, &ink).or_else(background_click)
 }
 
@@ -397,8 +397,8 @@ fn paint_info(
     y += info.time_height(painter) + info.unit * 0.026;
     let thickness = info.thickness();
     let track = Rect::from_min_size(Pos2::new(info.left, y), Vec2::new(info.width, thickness));
-    let (elapsed, command) = apple::seek_track(ui, painter, id, view, song, track, ink);
-    apple::paint_times(
+    let (elapsed, command) = classic::seek_track(ui, painter, id, view, song, track, ink);
+    classic::paint_times(
         painter,
         track,
         times_top,
@@ -541,7 +541,7 @@ fn paint_backdrop(painter: &Painter, screen: Rect, view: &View, time: f64) {
     if backdrop::uses_artist_image(view) {
         let pan = view.motion.then_some(time);
         backdrop::paint_artist_image(painter, screen, art, Color32::WHITE, pan);
-        // Lighter than the Apple layout's wash; the text halo does the rest.
+        // Lighter than the Classic layout's wash; the text halo does the rest.
         let brightness = art.current.map_or(0.5, |a| a.artist_brightness);
         let wash = artist_wash(brightness);
         painter.rect_filled(screen, 0.0, with_alpha(Color32::BLACK, wash));

@@ -151,7 +151,7 @@ fn pastel(color: Color32) -> Color32 {
     from_hsl([h, s, l])
 }
 
-/// Colours of text, icons and progress bars in the Apple and Vibrant layouts: plain white, or
+/// Colours of text, icons and progress bars in the Classic and Vibrant layouts: plain white, or
 /// light tints of the album colours.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ink {

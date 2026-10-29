@@ -1,5 +1,6 @@
-pub mod apple;
 pub mod backdrop;
+pub mod classic;
+pub mod encore_classic;
 pub mod export_panel;
 pub mod icons;
 pub mod lyrics_column;
@@ -7,7 +8,6 @@ pub mod lyrics_panel;
 pub mod panel_theme;
 pub mod scheme;
 pub mod shortcuts;
-pub mod spotify;
 pub mod toasts;
 pub mod up_next;
 pub mod vibrant;
@@ -68,17 +68,17 @@ pub struct View<'a> {
     /// Off-screen rendering for exports: no clock, no hover effects and no interaction, and
     /// grain over a blurred-art backdrop against banding in the encoded video.
     pub capture: bool,
-    /// Animated backdrop: the art drifts and turns behind the Apple and Vibrant layouts.
+    /// Animated backdrop: the art drifts and turns behind the Classic and Vibrant layouts.
     pub motion: bool,
     /// Use the artist image as the background when the song's artist has one.
     pub artist_bg: bool,
     /// Text, icons and bars take their colours from the album art; plain white when off.
     pub tint: bool,
-    /// Previous and next buttons at the ends of the Spotify layout's progress bar.
+    /// Previous and next buttons at the ends of the Encore Classic layout's progress bar.
     pub skip_buttons: bool,
-    /// Alignment of the Spotify layout's lyrics.
+    /// Alignment of the Encore Classic layout's lyrics.
     pub lyrics_align: LyricsAlign,
-    /// How the Spotify layout's synced lyrics move.
+    /// How the Encore Classic layout's synced lyrics move.
     pub lyrics_flow: LyricsFlow,
 }
 

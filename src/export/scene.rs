@@ -7,7 +7,7 @@ use super::{ExportRequest, FrameInputs};
 use crate::art::{self, ArtImages, ArtTextures, Thumb};
 use crate::config::{Config, LyricsAlign, LyricsFlow};
 use crate::player::{PlayState, PlayerState, SongInfo};
-use crate::ui::{apple, spotify, vibrant, ArtView, View};
+use crate::ui::{classic, encore_classic, vibrant, ArtView, View};
 
 /// Draws export frames. Lives on the export thread.
 pub trait Scene: Send {
@@ -105,9 +105,9 @@ impl Scene for LayoutScene {
             lyrics_flow: self.lyrics_flow,
         };
         match self.style {
-            Style::Dark => apple::draw(ui, &view),
+            Style::Classic => classic::draw(ui, &view),
             Style::Vibrant => vibrant::draw(ui, &view),
-            Style::Spotify => spotify::draw(ui, &view),
+            Style::EncoreClassic => encore_classic::draw(ui, &view),
         };
     }
 }

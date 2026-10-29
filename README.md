@@ -18,39 +18,39 @@ This is a replacement for my old [mpd-display](https://github.com/allylikesu/mpd
 Only tested on Linux. Needs either an MPD server (and `mpc`, used to fetch its album art) or any MPRIS-capable player; see [Prerequisites](#prerequisites). `ffmpeg` (with libx264 and aac) is optional and only needed for [exporting lyric clips](#exporting-lyric-clips).
 
 ## Layouts
-Three layouts are available. `l` cycles through them at runtime (Apple → Vibrant → Spotify), and `ENCORE_LAYOUT` chooses the starting one.
+Three layouts are available. `l` cycles through them at runtime (Encore Classic → Classic → Vibrant), `h` cycles back the other way, and `ENCORE_LAYOUT` chooses the starting one.
 
-- **Apple Music-style** (default): a blurred album art backdrop, rounded album art with the title, "Artist — Album" and a progress bar below it, clickable previous/play-pause/next buttons, a seekable progress bar, and a time-synced lyrics column on the right. The active lyric line is highlighted, the column scrolls smoothly, and lines far from the active one fade out. An optional date/clock overlay can be toggled with `t`.
-- **Vibrant**: modelled on Apple Music's colourful lyrics view. The backdrop is bright: enlarged, heavily blurred copies of the album art with a faint gradient of its main colours over them, cross-fading between songs. Light covers stay light; a soft dark halo behind the text, and a mild wash on very light art, keep white text readable. Square album art sits on the left with the elapsed and remaining time, a thin seekable progress bar, and the title and "Artist — Album" centred beneath it, and the time-synced lyrics are on the right. There are no transport buttons; clicking anywhere toggles play/pause. Tall and square windows stack the art above the lyrics. The `t` clock overlay works here too.
-- **Spotify-style**: modelled on the Spotify desktop client's fullscreen mode, with the artist's background image (see [below](#obtaining-and-using-artist-background-images-from-spotify)). The album art, with rounded corners and a soft shadow, sits on the left with the large title and artist beside it. A rounded-square play/pause button, styled after the Quickshell (illogical-impulse) media widget, sits at the far right with its bottom level with the art's. Along the bottom of the screen runs a thin seekable wavy progress bar with previous and next buttons at its ends, the previous button level with the art's left edge and the next button with the play button's right edge; `s` hides the buttons, and the bar then runs from the art's left edge to the play button's right edge. The elapsed part of the bar is a sine wave that moves while playing and flattens when paused, followed by a vertical bar handle and the flat remaining track; click or drag it to seek. The icons are the filled, rounded Material Symbols, drawn as vector shapes. Clicking anywhere else toggles play/pause. Text, icons, the bar and the button take their colours from the cover (see [Album colours](#album-colours)). The lyrics sit above the title in bold at the same size as in the Vibrant layout, without a shadow; lines differ only in brightness. The top of the active line stays at a fixed height, 60% of the art's height above the art, and a wrapped active line grows downwards. The lines run in a column as wide as the Vibrant layout's lyrics column and wrap where they do there, each line at the column's width scaled by its size, so a lyric breaks at the same words in both layouts; nothing comes closer to the title than one and a half times the gap between the art and the title. Text reaching that edge, or the Up next card's, dissolves into it: the glyphs fade out gradually over about one line's height instead of being cut off. `j` cycles the column's alignment: right-aligned with its right edge on the play button's right edge (the default), left-aligned with its left edge on the title's left edge, centred between the two, or the right-hand column with its lines left-aligned. `o` cycles through three flows for time-synced lyrics:
+- **Encore Classic** (default): modelled on the Spotify desktop client's fullscreen mode, with the artist's background image (see [below](#obtaining-and-using-artist-background-images-from-spotify)). The album art, with rounded corners and a soft shadow, sits on the left with the large title and artist beside it. A rounded-square play/pause button, styled after the Quickshell (illogical-impulse) media widget, sits at the far right with its bottom level with the art's. Along the bottom of the screen runs a thin seekable wavy progress bar with previous and next buttons at its ends, the previous button level with the art's left edge and the next button with the play button's right edge; `s` hides the buttons, and the bar then runs from the art's left edge to the play button's right edge. The elapsed part of the bar is a sine wave that moves while playing and flattens when paused, followed by a vertical bar handle and the flat remaining track; click or drag it to seek. The icons are the filled, rounded Material Symbols, drawn as vector shapes. Clicking anywhere else toggles play/pause. Text, icons, the bar and the button take their colours from the cover (see [Album colours](#album-colours)). The lyrics sit above the title in bold at the same size as in the Vibrant layout, without a shadow; lines differ only in brightness. The top of the active line stays at a fixed height, 60% of the art's height above the art, and a wrapped active line grows downwards. The lines run in a column as wide as the Vibrant layout's lyrics column and wrap where they do there, each line at the column's width scaled by its size, so a lyric breaks at the same words in both layouts; nothing comes closer to the title than one and a half times the gap between the art and the title. Text reaching that edge, or the Up next card's, dissolves into it: the glyphs fade out gradually over about one line's height instead of being cut off. `j` cycles the column's alignment: right-aligned with its right edge on the play button's right edge (the default), left-aligned with its left edge on the title's left edge, centred between the two, or the right-hand column with its lines left-aligned. `o` cycles through three flows for time-synced lyrics:
   - **Stacked** (default), after Apple Music: the active line sits at the top of the stack, brightest, with the next three lines below it, each fainter than the one above. On each new line the stack slides up, the outgoing line fading out as it leaves and the next one brightening into the top slot, with a slight vertical smear while the lines move.
   - **Classic**: four lines: the previous one faint above the active one, the next one faint below it, and the one after that barely visible beneath. On each new line they scroll up smoothly, the outgoing line fading out at the top, the barely visible line brightening into the next line's place and a new one fading in at the bottom.
-  - **Scrolling**, like the Apple and Vibrant layouts' lyrics: the whole lyrics scroll past, the active line at its fixed height, larger and brightest, with the lines before and after it smaller and dimmer the further they are from it. On each new line the list scrolls up and the lines grow into or out of the active style.
+  - **Scrolling**, like the Classic and Vibrant layouts' lyrics: the whole lyrics scroll past, the active line at its fixed height, larger and brightest, with the lines before and after it smaller and dimmer the further they are from it. On each new line the list scrolls up and the lines grow into or out of the active style.
 
   `• • •` stands for the time before the first line and for instrumental gaps. Unsynced lyrics use the classic flow and advance through the song at an even pace. While the Up next card (see below) shows, lines above the active one that reach under it dissolve; the active line stays where it is. The `t` date and clock, in the same format as the other layouts, sit centred above the album art.
-- **Up next**: in every layout, for the last 10% of a song with another one queued, the next song slides into the top-right corner: its rounded cover with its title and artist beside it, and a thin bar below counting down the rest of the current song, drawn straight over the backdrop in the layout's own text colours (with the Vibrant layout's dark halo behind the text). In the Apple and Vibrant layouts, lyric lines reaching under the card fade out while the active line stays put, and tall and square windows move their content down below the card while it shows.
+- **Classic**: modelled on Apple Music's fullscreen player. A blurred album art backdrop, rounded album art with the title, "Artist — Album" and a progress bar below it, clickable previous/play-pause/next buttons, a seekable progress bar, and a time-synced lyrics column on the right. The active lyric line is highlighted, the column scrolls smoothly, and lines far from the active one fade out. An optional date/clock overlay can be toggled with `t`.
+- **Vibrant**: modelled on Apple Music's colourful lyrics view. The backdrop is bright: enlarged, heavily blurred copies of the album art with a faint gradient of its main colours over them, cross-fading between songs. Light covers stay light; a soft dark halo behind the text, and a mild wash on very light art, keep white text readable. Square album art sits on the left with the elapsed and remaining time, a thin seekable progress bar, and the title and "Artist — Album" centred beneath it, and the time-synced lyrics are on the right. There are no transport buttons; clicking anywhere toggles play/pause. Tall and square windows stack the art above the lyrics. The `t` clock overlay works here too.
+- **Up next**: in every layout, for the last 10% of a song with another one queued, the next song slides into the top-right corner: its rounded cover with its title and artist beside it, and a thin bar below counting down the rest of the current song, drawn straight over the backdrop in the layout's own text colours (with the Vibrant layout's dark halo behind the text). In the Classic and Vibrant layouts, lyric lines reaching under the card fade out while the active line stays put, and tall and square windows move their content down below the card while it shows.
 - **Moving backdrop**: enlarged, blurred copies of the album art drift across the screen, turn, swell and blend into each other, like Apple Music's animated artwork. It keeps moving while playback is paused. Toggle it with `b`, or start without it with `ENCORE_MOTION=off`; with it off, the backdrop is still.
-- **Backgrounds**: `a` toggles the artist background for the current layout. When it is on and `artists/` has an image for the song's artist, the layout uses that image: tinted dark in the Spotify and Apple layouts with a vignette in the Apple one, and lighter in the Vibrant layout, with a halo behind the text. With motion on, the image slowly pans and zooms. When it is off, or there is no image, each layout uses its own backdrop: blurred album art for Spotify (moving when motion is on, darkened to match), dark blurred art for Apple and the colourful art for Vibrant. The setting is kept per layout for the session; it starts on for Spotify and off for Apple and Vibrant, and `ENCORE_ARTIST_BG` sets the starting value for all of them.
+- **Backgrounds**: `a` toggles the artist background for the current layout. When it is on and `artists/` has an image for the song's artist, the layout uses that image: tinted dark in the Encore Classic and Classic layouts with a vignette in the Classic one, and lighter in the Vibrant layout, with a halo behind the text. With motion on, the image slowly pans and zooms. When it is off, or there is no image, each layout uses its own backdrop: blurred album art for Encore Classic (moving when motion is on, darkened to match), dark blurred art for Classic and the colourful art for Vibrant. The setting is kept per layout for the session; it starts on for Encore Classic and off for Classic and Vibrant, and `ENCORE_ARTIST_BG` sets the starting value for all of them.
 
 ### Album colours
 Every layout takes its colours from the album art. The cover's average colour is blended into a small Material 3 dark scheme (primary, on-primary, secondary container and text colours), the same way the Quickshell media widget adapts its colours. The main text is a light pastel of the cover's hue, still the brightest text on screen; grey covers give near-white text.
 
-- **Spotify**: the title, active lyric line, clock and the next song's title use the pastel, the date uses the scheme's muted text colour, and the other lyric lines are fainter versions of it; the artist uses the scheme's muted text colour; the progress bar uses the primary colour for the elapsed part and handle and the secondary container colour for the rest of the track; and the play/pause button is filled with the primary colour while playing and the secondary container colour while paused.
-- **Apple**: the title, active lyric line, filled part of the progress bar and all buttons use the pastel; "Artist — Album", the other lyric lines and the times use a slightly deeper shade of it, at their usual opacity. The Up next card takes the title's, subtitle's and progress bar's colours.
-- **Vibrant**: as in the Apple layout, but the pastel is mixed towards white until the text keeps at least 80% of white text's contrast against the bright backdrop (70% for the fainter lines).
+- **Encore Classic**: the title, active lyric line, clock and the next song's title use the pastel, the date uses the scheme's muted text colour, and the other lyric lines are fainter versions of it; the artist uses the scheme's muted text colour; the progress bar uses the primary colour for the elapsed part and handle and the secondary container colour for the rest of the track; and the play/pause button is filled with the primary colour while playing and the secondary container colour while paused.
+- **Classic**: the title, active lyric line, filled part of the progress bar and all buttons use the pastel; "Artist — Album", the other lyric lines and the times use a slightly deeper shade of it, at their usual opacity. The Up next card takes the title's, subtitle's and progress bar's colours.
+- **Vibrant**: as in the Classic layout, but the pastel is mixed towards white until the text keeps at least 80% of white text's contrast against the bright backdrop (70% for the fainter lines).
 - **Panels**: the [keyboard shortcuts overlay](#keyboard-shortcuts-overlay), the [clip export panel](#the-panel) and the [lyrics manager](#lyrics-manager) share one palette. The card is a dark surface with a faint hint of the cover's hue, and the dimmed backdrop behind it takes the same hint; titles use the pastel, and descriptions, key caps, outlines and hints are quieter shades of it. The overlay's section headings, selected chips, switches that are on, the Export button, the range slider's fill and handles, and the highlighted lyric lines use the primary colour, with dark text on filled controls. Tooltips and scroll bars inside the export panel follow the same palette.
 
-Every colour keeps a minimum contrast against its backdrop, so light, dark and very saturated covers stay readable, and the colours cross-fade along with the art when the song changes. `k` turns album colours off: the Apple and Vibrant layouts are then plain white, the Spotify layout uses a neutral grey scheme with white text, and the panels are neutral grey with white text and white buttons. `ENCORE_TINT=off` starts with them off.
+Every colour keeps a minimum contrast against its backdrop, so light, dark and very saturated covers stay readable, and the colours cross-fade along with the art when the song changes. `k` turns album colours off: the Classic and Vibrant layouts are then plain white, the Encore Classic layout uses a neutral grey scheme with white text, and the panels are neutral grey with white text and white buttons. `ENCORE_TINT=off` starts with them off.
 
 ## Features
 - Toggleable fullscreen with the `f` or `F11` key
 - Fully reactive window, all screen elements will be properly scaled/positioned
 - Artist-specific background art (See more [here](#obtaining-and-using-artist-background-images-from-spotify))
 - Time-synced lyrics from local files, a cache, [LRCLIB](#lyrics) or KuGou, with a [lyrics manager](#lyrics-manager) for picking, editing and re-timing them
-- Click or press space to play/pause; `←` / `→` for previous/next track
+- Click or press space to play/pause; `←` / `→` to seek 5 seconds; `<` / `>` for previous/next track
 - Easy to quit with `Esc` or `q`
 - Works with MPD or any MPRIS player (see [Players](#players))
-- Keyboard shortcuts overlay on `?` or `h` (see [below](#keyboard-shortcuts-overlay))
+- Keyboard shortcuts overlay on `?` (see [below](#keyboard-shortcuts-overlay))
 - Toggle cursor visibility with `c`
 - Toggle a useless debug window with `d`
 - Export lyric clips as share-ready MP4s (see [below](#exporting-lyric-clips))
@@ -62,24 +62,26 @@ Every colour keeps a minimum contrast against its backdrop, so light, dark and v
 | `c` | Toggle cursor visibility |
 | `d` | Toggle debug window |
 | `Space` (or click) | Play/pause |
-| `←` / `→` | Previous / next track |
-| `l` | Cycle layouts (Apple → Vibrant → Spotify) |
+| `←` / `→` | Seek 5 seconds back / forward within the song |
+| `<` / `>` (`Shift`+`,` / `Shift`+`.`) | Previous / next track (`,` and `.` alone do nothing) |
+| `l` | Cycle layouts (Encore Classic → Classic → Vibrant) |
+| `h` | Cycle layouts backwards (Encore Classic → Vibrant → Classic) |
 | `y` | Toggle lyrics |
 | `Shift`+`y` | Open/close the [lyrics manager](#lyrics-manager) |
 | `t` | Toggle date/clock overlay |
 | `b` | Toggle the moving backdrop |
 | `a` | Toggle the artist background for the current layout |
 | `k` | Toggle album colours |
-| `s` | Toggle the previous/next buttons beside the Spotify layout's progress bar |
-| `j` | Cycle the Spotify layout's lyric alignment (left → centre → right → right column, left-aligned) |
-| `o` | Cycle the Spotify layout's lyric flow (classic → stacked → scrolling) |
+| `s` | Toggle the previous/next buttons beside the Encore Classic layout's progress bar |
+| `j` | Cycle the Encore Classic layout's lyric alignment (left → centre → right → right column, left-aligned) |
+| `o` | Cycle the Encore Classic layout's lyric flow (classic → stacked → scrolling) |
 | `e` | Open/close the lyric clip export panel |
 | `[` / `]` | Mark the clip in-point / out-point at the current playback position |
-| `?` / `h` | Show/hide the keyboard shortcuts overlay |
+| `?` | Show/hide the keyboard shortcuts overlay |
 | `Esc` / `q` | Quit (`Esc` closes the shortcuts overlay first when it is open; `q` always quits) |
 
 ### Keyboard shortcuts overlay
-`?` or `h` opens a "Keyboard shortcuts" cheatsheet over a dimmed backdrop: a dark card with the keys grouped into Playback, Lyrics, Display, Export and App across three columns, each key drawn as an outlined monospace key cap beside its description, with alternative keys separated by a `/` and the keys of a combination joined by a `+`. Press `?` or `h` again, press `Esc`, click the × in the card's corner, or click outside the card to close it; the click does not toggle play/pause. Other keys keep working while it is open. While the export panel or the lyrics manager is open, `?` and `h` do nothing.
+`?` opens a "Keyboard shortcuts" cheatsheet over a dimmed backdrop: a dark card with the keys grouped into Playback, Lyrics, Display, Export and App across three columns, each key drawn as an outlined monospace key cap beside its description, with alternative keys separated by a `/` and the keys of a combination joined by a `+`. Press `?` again, press `Esc`, click the × in the card's corner, or click outside the card to close it; the click does not toggle play/pause. Other keys keep working while it is open. While the export panel or the lyrics manager is open, `?` does nothing.
 
 ## Screenshots
 ![image](img/1.png)
@@ -150,13 +152,13 @@ Encore starts fullscreen: `Esc` or `q` quits and `f` toggles fullscreen.
 Startup settings live in `~/.config/encore/config.toml` (`$XDG_CONFIG_HOME/encore/config.toml` when `XDG_CONFIG_HOME` is set). On first launch Encore writes a starter file there with every setting commented out at its default; an existing file is never overwritten. Every key is optional:
 
 ```toml
-layout = "spotify"          # apple | vibrant | spotify
+layout = "encore-classic"   # encore-classic | classic | vibrant
 lyrics = true
 lyrics_online = true        # LRCLIB and KuGou lookups
 lyrics_align = "right-left" # left | center | right | right-left
 lyrics_flow = "scrolling"   # classic | stacked | scrolling
 motion = true
-artist_bg = true            # unset: on for Spotify, off for the others
+artist_bg = true            # unset: on for Encore Classic, off for the others
 tint = true
 skip_buttons = true
 clock = true                # date and clock overlay at startup
@@ -181,21 +183,21 @@ Environment variables override the [configuration file](#configuration-file). Th
 | `MPD_PORT` | MPD server port. Defaults to `6600`. |
 | `MPD_MUSIC_DIR` | Your MPD music directory. Enables sidecar lyrics files next to the audio files and audio in exported clips. If unset, `music_directory` is read from `$XDG_CONFIG_HOME/mpd/mpd.conf` (`~/.config/mpd/mpd.conf` when unset), `~/.mpdconf`, or `/etc/mpd.conf`, whichever exists first. |
 | `ENCORE_EXPORT_DIR` | Output folder for exported clips. Defaults to `~/Videos/encore`. |
-| `ENCORE_LAYOUT` | `apple`, `vibrant` or `spotify`. Defaults to `apple`. |
+| `ENCORE_LAYOUT` | `encore-classic`, `classic` or `vibrant`. Defaults to `encore-classic`. |
 | `ENCORE_LYRICS` | `on` or `off`. Defaults to `on`. |
 | `ENCORE_MOTION` | `on` or `off`: the moving backdrop. Defaults to `on`. |
-| `ENCORE_ARTIST_BG` | `on` or `off`: the artist background in every layout. Defaults to on for the Spotify layout and off for the others. |
+| `ENCORE_ARTIST_BG` | `on` or `off`: the artist background in every layout. Defaults to on for the Encore Classic layout and off for the others. |
 | `ENCORE_TINT` | `on` or `off`: [album colours](#album-colours) for text, icons and bars. Defaults to `on`. |
-| `ENCORE_SKIP_BUTTONS` | `on` or `off`: previous/next buttons beside the Spotify layout's progress bar. Defaults to `on`. |
-| `ENCORE_LYRICS_ALIGN` | `left`, `center`, `right` or `right-left` (the right-hand column with left-aligned lines): alignment of the Spotify layout's lyrics. Defaults to `right`. |
-| `ENCORE_LYRICS_FLOW` | `classic`, `stacked` or `scrolling`: how the Spotify layout's synced lyrics move. Defaults to `stacked`. |
+| `ENCORE_SKIP_BUTTONS` | `on` or `off`: previous/next buttons beside the Encore Classic layout's progress bar. Defaults to `on`. |
+| `ENCORE_LYRICS_ALIGN` | `left`, `center`, `right` or `right-left` (the right-hand column with left-aligned lines): alignment of the Encore Classic layout's lyrics. Defaults to `right`. |
+| `ENCORE_LYRICS_FLOW` | `classic`, `stacked` or `scrolling`: how the Encore Classic layout's synced lyrics move. Defaults to `stacked`. |
 | `ENCORE_LYRICS_ONLINE` | Set to `0`, `off`, `false` or `no` to disable online lookups (LRCLIB and KuGou) and the lyrics manager's search. Enabled by default. |
 | `ENCORE_SOURCE` | `auto`, `mpd` or `mpris` (case-insensitive): [where playback is read from](#players). Defaults to `auto`. |
 | `ENCORE_MPRIS_PLAYER` | Case-insensitive part of an MPRIS player's name (for example `spotify`, `firefox`, `vlc` or `mpv`) to follow. Defaults to any player. |
 | `ENCORE_CLOCK` | `on` or `off`: the date and clock overlay at startup (`t` toggles it). Defaults to `on`. |
 
 ## Exporting lyric clips
-Renders a share-ready MP4 of the Apple, Vibrant or Spotify layout (lyrics, album art, title and progress bar) for a chosen part of the current song. Rendering happens offline in the background on the GPU while the display keeps running; with the CPU encoding at the same time, a clip with the moving backdrop takes a few times its own length to export. Requires `ffmpeg` with libx264 and aac.
+Renders a share-ready MP4 of the Encore Classic, Classic or Vibrant layout (lyrics, album art, title and progress bar) for a chosen part of the current song. Rendering happens offline in the background on the GPU while the display keeps running; with the CPU encoding at the same time, a clip with the moving backdrop takes a few times its own length to export. Requires `ffmpeg` with libx264 and aac.
 
 ### Formats
 | Format | Resolution |
@@ -204,19 +206,19 @@ Renders a share-ready MP4 of the Apple, Vibrant or Spotify layout (lyrics, album
 | 9:16 (default) | 1080×1920 |
 | 1:1 | 1080×1080 |
 
-Pick one or several with the **Size** chips; each becomes its own file. Portrait and square have their own layouts, which are also used when the live window has that shape. The Spotify style renders 16:9 only.
+Pick one or several with the **Size** chips; each becomes its own file. Portrait and square have their own layouts, which are also used when the live window has that shape. The Encore Classic style renders 16:9 only.
 
 ### The panel
 Press `e` to open the export panel. It has two columns: **Clip** on the left for the range, and **Look** and **Output** on the right, with Cancel and Export below them. Narrow windows stack the columns.
 
 ### Look
-The **Style** chips (**Dark**, **Vibrant** and **Spotify**) choose the look of the clip: the dark Apple layout over blurred art, the colourful Vibrant layout, or the Spotify layout (with the next song in the corner when the clip reaches the last 10% of the song). The panel starts on the style of the layout on screen. Everything else in the section starts at the display's current setting:
-- **Lyrics** (**Left**, **Center**, **Right**) and **Flow** (**Classic**, **Stacked**): the Spotify style's lyric alignment and flow; disabled for the other styles.
+The **Style** chips (**Classic**, **Vibrant** and **Encore Classic**) choose the look of the clip: the dark Classic layout over blurred art, the colourful Vibrant layout, or the Encore Classic layout (with the next song in the corner when the clip reaches the last 10% of the song). The panel starts on the style of the layout on screen. Everything else in the section starts at the display's current setting:
+- **Lyrics** (**Left**, **Center**, **Right**) and **Flow** (**Classic**, **Stacked**): the Encore Classic style's lyric alignment and flow; disabled for the other styles.
 - **Motion**: the moving backdrop, or a still one when off.
 - **Artist background**: the artist image as the background; it starts at the live setting of the chosen style's layout and is disabled, with a note, when `artists/` has no image for the song's artist.
 - **Album colours**: [album colours](#album-colours), or the plain look when off.
 
-Spotify-style clips also follow the display's skip-button setting (`s`).
+Encore Classic clips also follow the display's skip-button setting (`s`).
 
 ### Choosing the range
 The lines inside the clip are highlighted in the lyric list, and the range slider below it spans the whole song, with a tick at the start of every lyric line. All three controls stay in sync:
@@ -229,7 +231,7 @@ The lines inside the clip are highlighted in the lyric list, and the range slide
 - `Esc` closes the panel.
 
 ### Quality
-The **Quality** chips, **High** and **Small**, pick the encoder settings; the panel remembers the choice until the display restarts and shows a rough size estimate of the files next to the chips. Notes below them say when the Spotify style limits the sizes to 16:9, when there is no artist image, when no audio file was found, and when the range cannot be exported.
+The **Quality** chips, **High** and **Small**, pick the encoder settings; the panel remembers the choice until the display restarts and shows a rough size estimate of the files next to the chips. Notes below them say when the Encore Classic style limits the sizes to 16:9, when there is no artist image, when no audio file was found, and when the range cannot be exported.
 
 | Preset | Video | Audio | Target |
 | --- | --- | --- | --- |
@@ -302,7 +304,7 @@ Every view of the manager has a transport row above its buttons, for moving thro
 | `Alt`+`←` / `Alt`+`→` | Seek 5 seconds back / forward, also while typing in the search field or the editor |
 | `Alt`+`p` | Play/pause, also while typing |
 
-The manager takes these keys for itself, so the text fields neither move the cursor nor type a character for them, and the app's previous / next track and play/pause shortcuts don't act while it is open.
+The manager takes these keys for itself, so the text fields neither move the cursor nor type a character for them, and the app's seeking and play/pause shortcuts don't act while it is open.
 
 - **Current lyrics**: the card at the top shows the lyrics on the display and where they came from, such as "Synced (Cache (LRCLIB))" or "Plain (Manual)", with the timing offset when one is set. Its buttons copy the lyrics to the clipboard, open the timing view, and, for saved manual lyrics, remove them after a confirmation, which looks the song up again.
 - **Search**: the field searches LRCLIB and KuGou for its text; left empty it searches for the song's own title and artist. The arrow beside it fills in "Artist - Title". `Enter` or **Search** starts a search. Results are ranked by how well their title and artist match (title words weigh more than the artist, and instrumental or karaoke versions rank lower), then synced before plain, then by the closest length, and identical lyrics are listed once. Each result shows its provider, whether it is synced, its title and artist, its length with the difference from the song's, and whether it is a sure, good or weak match, with its first lines. Providers that fail are noted above the results. Searching needs online lyrics (`lyrics_online`).

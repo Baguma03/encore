@@ -66,54 +66,54 @@ impl Aspect {
     }
 }
 
-/// Look of an exported clip: the dark Apple layout, the colourful Vibrant one, or the
-/// Spotify layout over the artist background.
+/// Look of an exported clip, one per layout: the dark Classic layout, the colourful Vibrant
+/// one, or the Encore Classic layout over the artist background.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Style {
     #[default]
-    Dark,
+    Classic,
     Vibrant,
-    Spotify,
+    EncoreClassic,
 }
 
 impl Style {
-    pub const ALL: [Style; 3] = [Style::Dark, Style::Vibrant, Style::Spotify];
+    pub const ALL: [Style; 3] = [Style::Classic, Style::Vibrant, Style::EncoreClassic];
 
     pub fn display_name(self) -> &'static str {
         match self {
-            Style::Dark => "Dark",
+            Style::Classic => "Classic",
             Style::Vibrant => "Vibrant",
-            Style::Spotify => "Spotify",
+            Style::EncoreClassic => "Encore Classic",
         }
     }
 
     /// The style matching the live layout.
     pub fn for_layout(layout: Layout) -> Self {
         match layout {
-            Layout::Apple => Style::Dark,
+            Layout::Classic => Style::Classic,
             Layout::Vibrant => Style::Vibrant,
-            Layout::Spotify => Style::Spotify,
+            Layout::EncoreClassic => Style::EncoreClassic,
         }
     }
 
     /// The live layout this style renders.
     pub fn layout(self) -> Layout {
         match self {
-            Style::Dark => Layout::Apple,
+            Style::Classic => Layout::Classic,
             Style::Vibrant => Layout::Vibrant,
-            Style::Spotify => Layout::Spotify,
+            Style::EncoreClassic => Layout::EncoreClassic,
         }
     }
 
-    /// Whether this style can render `aspect`; the Spotify layout is landscape only.
+    /// Whether this style can render `aspect`; the Encore Classic layout is landscape only.
     pub fn supports(self, aspect: Aspect) -> bool {
-        self != Style::Spotify || aspect == Aspect::Landscape
+        self != Style::EncoreClassic || aspect == Aspect::Landscape
     }
 
-    /// The formats to render for the `chosen` ones, in [`Aspect::ALL`] order. The Spotify
-    /// style always renders 16:9 alone.
+    /// The formats to render for the `chosen` ones, in [`Aspect::ALL`] order. The Encore
+    /// Classic style always renders 16:9 alone.
     pub fn formats(self, chosen: &[Aspect]) -> Vec<Aspect> {
-        if self == Style::Spotify {
+        if self == Style::EncoreClassic {
             return vec![Aspect::Landscape];
         }
         Aspect::ALL
@@ -143,11 +143,11 @@ pub struct ExportRequest {
     pub artist_bg: bool,
     /// Album colours for text, icons and bars.
     pub tint: bool,
-    /// Previous and next buttons beside the Spotify style's progress bar.
+    /// Previous and next buttons beside the Encore Classic style's progress bar.
     pub skip_buttons: bool,
-    /// Alignment of the Spotify style's lyrics.
+    /// Alignment of the Encore Classic style's lyrics.
     pub lyrics_align: LyricsAlign,
-    /// How the Spotify style's synced lyrics move.
+    /// How the Encore Classic style's synced lyrics move.
     pub lyrics_flow: LyricsFlow,
     pub quality: Quality,
 }
@@ -645,19 +645,22 @@ mod tests {
     }
 
     #[test]
-    fn spotify_style_is_landscape_only() {
+    fn encore_classic_style_is_landscape_only() {
         let chosen = [Aspect::Square, Aspect::Portrait];
         assert_eq!(
-            Style::Dark.formats(&chosen),
+            Style::Classic.formats(&chosen),
             [Aspect::Portrait, Aspect::Square]
         );
-        assert_eq!(Style::Spotify.formats(&chosen), [Aspect::Landscape]);
-        assert_eq!(Style::Spotify.formats(&[]), [Aspect::Landscape]);
-        assert!(Style::Spotify.supports(Aspect::Landscape));
-        assert!(!Style::Spotify.supports(Aspect::Portrait));
+        assert_eq!(Style::EncoreClassic.formats(&chosen), [Aspect::Landscape]);
+        assert_eq!(Style::EncoreClassic.formats(&[]), [Aspect::Landscape]);
+        assert!(Style::EncoreClassic.supports(Aspect::Landscape));
+        assert!(!Style::EncoreClassic.supports(Aspect::Portrait));
         assert!(Aspect::ALL.iter().all(|&a| Style::Vibrant.supports(a)));
-        assert_eq!(Style::for_layout(Layout::Spotify), Style::Spotify);
-        assert_eq!(Style::for_layout(Layout::Apple), Style::Dark);
+        assert_eq!(
+            Style::for_layout(Layout::EncoreClassic),
+            Style::EncoreClassic
+        );
+        assert_eq!(Style::for_layout(Layout::Classic), Style::Classic);
     }
 
     #[test]
@@ -903,11 +906,11 @@ mod tests {
     /// Exports 6 seconds of a library song with a fixture LRC, then checks the files with
     /// ffprobe and saves frames every 0.5 s from 1 s to 4 s next to them.
     /// Set `ENCORE_TEST_SONG` to an MPD-relative file and `ENCORE_EXPORT_DIR` to the
-    /// output folder. Optional: `ENCORE_TEST_STYLE` (`dark`, `vibrant` or `spotify`),
+    /// output folder. Optional: `ENCORE_TEST_STYLE` (`classic`, `vibrant` or `encore-classic`),
     /// `ENCORE_TEST_MOTION=off`, `ENCORE_TEST_START` (clip start in seconds, default
     /// 60), `ENCORE_TEST_FORMATS` (comma-separated labels such as `16x9,1x1`) and
     /// `ENCORE_TEST_NEXT` (the queued song for the Up next card) and
-    /// `ENCORE_TEST_ARTIST_BG=on|off` (default on for the Spotify style only),
+    /// `ENCORE_TEST_ARTIST_BG=on|off` (default on for the Encore Classic style only),
     /// `ENCORE_TEST_SECONDS` (clip length, default 6), `ENCORE_TEST_QUALITY=small`
     /// (default high), `ENCORE_TEST_TINT=off` and `ENCORE_TEST_SKIP_BUTTONS=off`
     /// (both default on), `ENCORE_TEST_LYRICS_ALIGN=left|center|right` (default right),
@@ -1004,8 +1007,8 @@ mod tests {
         let lyrics = LyricsState::Found(Arc::new(encore::lyrics::lrc::parse_lrc(&lrc)));
         let style = match std::env::var("ENCORE_TEST_STYLE").as_deref() {
             Ok("vibrant") => Style::Vibrant,
-            Ok("spotify") => Style::Spotify,
-            _ => Style::Dark,
+            Ok("encore-classic") => Style::EncoreClassic,
+            _ => Style::Classic,
         };
         let formats: Vec<Aspect> = match std::env::var("ENCORE_TEST_FORMATS") {
             Ok(list) => Aspect::ALL
@@ -1028,7 +1031,7 @@ mod tests {
             motion: std::env::var("ENCORE_TEST_MOTION").as_deref() != Ok("off"),
             artist_bg: match std::env::var("ENCORE_TEST_ARTIST_BG").as_deref() {
                 Ok(v) => v != "off",
-                Err(_) => style == Style::Spotify,
+                Err(_) => style == Style::EncoreClassic,
             },
             tint: std::env::var("ENCORE_TEST_TINT").as_deref() != Ok("off"),
             skip_buttons: std::env::var("ENCORE_TEST_SKIP_BUTTONS").as_deref() != Ok("off"),
@@ -1215,7 +1218,7 @@ mod tests {
             formats: vec![Aspect::Square, Aspect::Square],
             with_audio: true,
             fps: 30,
-            style: Style::Dark,
+            style: Style::Classic,
             motion: true,
             artist_bg: false,
             tint: true,

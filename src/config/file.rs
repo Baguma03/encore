@@ -25,8 +25,8 @@ pub const STARTER: &str = r#"# Encore configuration.
 # "firefox". Left unset, the playing player is followed.
 # mpris_player = "spotify"
 
-# Starting layout: "apple", "vibrant" or "spotify".
-# layout = "apple"
+# Starting layout: "encore-classic", "classic" or "vibrant".
+# layout = "encore-classic"
 
 # Lyrics on or off.
 # lyrics = true
@@ -34,24 +34,24 @@ pub const STARTER: &str = r#"# Encore configuration.
 # Look lyrics up on LRCLIB when there is no local file.
 # lyrics_online = true
 
-# Spotify layout lyrics alignment: "left", "center", "right" or "right-left" (the right-hand
+# Encore Classic layout lyrics alignment: "left", "center", "right" or "right-left" (the right-hand
 # column with left-aligned lines).
 # lyrics_align = "right"
 
-# How the Spotify layout's synced lyrics move: "classic", "stacked" or "scrolling".
+# How the Encore Classic layout's synced lyrics move: "classic", "stacked" or "scrolling".
 # lyrics_flow = "stacked"
 
 # Moving album art backdrop.
 # motion = true
 
-# Artist image as the background in every layout. Left unset, it is on for the Spotify layout
+# Artist image as the background in every layout. Left unset, it is on for the Encore Classic layout
 # and off for the others.
 # artist_bg = true
 
 # Text, icons and bars take their colours from the album art.
 # tint = true
 
-# Previous and next buttons beside the Spotify layout's progress bar.
+# Previous and next buttons beside the Encore Classic layout's progress bar.
 # skip_buttons = true
 
 # Date and clock overlay shown at startup.
@@ -124,7 +124,7 @@ const TOP_KEYS: &[(&str, &str, Kind)] = &[
     (
         "layout",
         "ENCORE_LAYOUT",
-        Kind::Choice(&["apple", "vibrant", "spotify"]),
+        Kind::Choice(&["encore-classic", "classic", "vibrant"]),
     ),
     ("lyrics", "ENCORE_LYRICS", Kind::Bool),
     ("lyrics_online", "ENCORE_LYRICS_ONLINE", Kind::Bool),
@@ -222,7 +222,7 @@ mod tests {
             r#"
             source = "MPRIS"
             mpris_player = "spotify"
-            layout = "Spotify"
+            layout = "Encore-Classic"
             lyrics = false
             lyrics_online = false
             lyrics_align = "right-left"
@@ -243,7 +243,7 @@ mod tests {
         let expected: HashMap<&str, String> = [
             ("ENCORE_SOURCE", "mpris"),
             ("ENCORE_MPRIS_PLAYER", "spotify"),
-            ("ENCORE_LAYOUT", "spotify"),
+            ("ENCORE_LAYOUT", "encore-classic"),
             ("ENCORE_LYRICS", "off"),
             ("ENCORE_LYRICS_ONLINE", "off"),
             ("ENCORE_LYRICS_ALIGN", "right-left"),
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn invalid_toml_gives_no_settings() {
-        assert!(parse("layout = \"spotify\"\nthis is not toml").is_empty());
+        assert!(parse("layout = \"vibrant\"\nthis is not toml").is_empty());
     }
 
     #[test]
@@ -329,11 +329,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         write_starter_if_missing(&file);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), STARTER);
-        std::fs::write(&file, "layout = \"spotify\"\n").unwrap();
+        std::fs::write(&file, "layout = \"vibrant\"\n").unwrap();
         write_starter_if_missing(&file);
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
-            "layout = \"spotify\"\n"
+            "layout = \"vibrant\"\n"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
