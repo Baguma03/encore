@@ -16,6 +16,7 @@ use log::{info, warn};
 
 use crate::config::{Config, Layout, LyricsAlign, LyricsFlow};
 use crate::player::{Origin, SongInfo};
+use crate::ui::fonts::DisplayFont;
 use ffmpeg::Encoder;
 pub use ffmpeg::Quality;
 use render::Renderer;
@@ -149,6 +150,8 @@ pub struct ExportRequest {
     pub lyrics_align: LyricsAlign,
     /// How the Encore Classic style's synced lyrics move.
     pub lyrics_flow: LyricsFlow,
+    /// The display font, which the clip's text is set in.
+    pub display_font: DisplayFont,
     pub quality: Quality,
 }
 
@@ -914,7 +917,8 @@ mod tests {
     /// `ENCORE_TEST_SECONDS` (clip length, default 6), `ENCORE_TEST_QUALITY=small`
     /// (default high), `ENCORE_TEST_TINT=off` and `ENCORE_TEST_SKIP_BUTTONS=off`
     /// (both default on), `ENCORE_TEST_LYRICS_ALIGN=left|center|right` (default right),
-    /// `ENCORE_TEST_LYRICS_FLOW=classic|stacked` (default stacked),
+    /// `ENCORE_TEST_LYRICS_FLOW=classic|stacked` (default stacked), `ENCORE_TEST_DISPLAY_FONT`
+    /// (a display font list entry, default Figtree),
     /// `ENCORE_TEST_FRAMES` (comma-separated clip times in seconds of the saved frames,
     /// default every 0.5 s from 1 s to 4 s) and
     /// `ENCORE_TEST_REFERENCE` (seconds of each format to also render losslessly to
@@ -1045,6 +1049,13 @@ mod tests {
                 Ok("classic") => LyricsFlow::Classic,
                 Ok("scrolling") => LyricsFlow::Scrolling,
                 _ => LyricsFlow::Stacked,
+            },
+            display_font: match std::env::var("ENCORE_TEST_DISPLAY_FONT") {
+                Ok(entry) => {
+                    let spec = crate::ui::fonts::FontSpec::parse(&entry, None);
+                    crate::ui::fonts::resolve(&spec).expect("display font")
+                }
+                Err(_) => DisplayFont::default(),
             },
             quality: match std::env::var("ENCORE_TEST_QUALITY").as_deref() {
                 Ok("small") => Quality::Small,
@@ -1225,6 +1236,7 @@ mod tests {
             skip_buttons: true,
             lyrics_align: LyricsAlign::Right,
             lyrics_flow: LyricsFlow::Stacked,
+            display_font: DisplayFont::default(),
             quality: Quality::Small,
         };
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));

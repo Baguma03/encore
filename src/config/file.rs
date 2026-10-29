@@ -64,6 +64,17 @@ pub const STARTER: &str = r#"# Encore configuration.
 # Folder for exported clips. Defaults to "~/Videos/encore".
 # export_dir = "~/Videos/encore"
 
+# Font of the now playing display (title, artist, album, lyrics, clock, times and the Up next
+# card) and of exported clips: "Figtree" (bundled), the family name of an installed font, or
+# the path to a .ttf or .otf file. Panels, overlays and notifications always use the bundled
+# Lexend Deca.
+# display_font = "Figtree"
+
+# Fonts the u key cycles through (Shift+u backwards), in the same forms as display_font. A
+# file named "...Regular..." takes its bold face from the file named "...Bold..." beside it.
+# Left unset, the list holds Figtree and display_font.
+# display_fonts = ["Figtree", "Inter", "~/.local/share/fonts/Poppins-Regular.ttf"]
+
 [mpd]
 # MPD server host. For a server with a password, use "password@host".
 # host = "localhost"
@@ -115,6 +126,8 @@ enum Kind {
     Choice(&'static [&'static str]),
     Text,
     Port,
+    /// A list of strings, or one string holding a comma-separated list.
+    List,
 }
 
 /// Keys of the top level and of `[mpd]`, with the variable each stands in for.
@@ -149,6 +162,8 @@ const TOP_KEYS: &[(&str, &str, Kind)] = &[
     ("skip_buttons", "ENCORE_SKIP_BUTTONS", Kind::Bool),
     ("clock", "ENCORE_CLOCK", Kind::Bool),
     ("export_dir", "ENCORE_EXPORT_DIR", Kind::Text),
+    ("display_font", "ENCORE_DISPLAY_FONT", Kind::Text),
+    ("display_fonts", "ENCORE_DISPLAY_FONTS", Kind::List),
 ];
 const MPD_KEYS: &[(&str, &str, Kind)] = &[
     ("host", "MPD_HOST", Kind::Text),
@@ -200,7 +215,9 @@ fn read_table(
     }
 }
 
-/// `value` in its variable's spelling, or `None` when it is not a valid `kind`.
+/// `value` in its variable's spelling, or `None` when it is not a valid `kind`. A list's
+/// entries are joined with newlines, so entries holding commas, such as some font file names,
+/// survive; see [`crate::config::split_list`].
 fn convert(value: &Value, kind: &Kind) -> Option<String> {
     match (kind, value) {
         (Kind::Bool, Value::Boolean(b)) => Some(if *b { "on" } else { "off" }.to_owned()),
@@ -213,6 +230,15 @@ fn convert(value: &Value, kind: &Kind) -> Option<String> {
             .ok()
             .filter(|&p| p > 0)
             .map(|p| p.to_string()),
+        (Kind::List, Value::String(s)) => Some(s.trim().to_owned()).filter(|s| !s.is_empty()),
+        (Kind::List, Value::Array(items)) => {
+            let entries = items
+                .iter()
+                .map(|v| v.as_str().map(str::trim))
+                .collect::<Option<Vec<_>>>()?;
+            let entries: Vec<_> = entries.into_iter().filter(|e| !e.is_empty()).collect();
+            (!entries.is_empty()).then(|| entries.join("\n"))
+        }
         _ => None,
     }
 }
@@ -239,6 +265,8 @@ mod tests {
             skip_buttons = false
             clock = false
             export_dir = "~/clips"
+            display_font = " Inter "
+            display_fonts = ["Figtree", "Inter", "~/f/A,B-Regular.ttf"]
 
             [mpd]
             host = "secret@media.lan"
@@ -261,6 +289,11 @@ mod tests {
             ("ENCORE_SKIP_BUTTONS", "off"),
             ("ENCORE_CLOCK", "off"),
             ("ENCORE_EXPORT_DIR", "~/clips"),
+            ("ENCORE_DISPLAY_FONT", "Inter"),
+            (
+                "ENCORE_DISPLAY_FONTS",
+                "Figtree\nInter\n~/f/A,B-Regular.ttf",
+            ),
             ("MPD_HOST", "secret@media.lan"),
             ("MPD_PORT", "6601"),
             ("MPD_MUSIC_DIR", "/srv/music"),
@@ -303,6 +336,22 @@ mod tests {
         assert_eq!(keys, ["ENCORE_TINT", "MPD_HOST"]);
         assert!(parse("mpd = 3\nmotion = false").contains_key("ENCORE_MOTION"));
         assert_eq!(parse("[mpd]\nport = 0").get("MPD_PORT"), None);
+    }
+
+    #[test]
+    fn font_lists() {
+        let fonts = |text: &str| parse(text).get("ENCORE_DISPLAY_FONTS").cloned();
+        assert_eq!(
+            fonts("display_fonts = \"Inter, Poppins\""),
+            Some("Inter, Poppins".into())
+        );
+        assert_eq!(
+            fonts("display_fonts = [\" Inter \", \"\", \"Poppins\"]"),
+            Some("Inter\nPoppins".into())
+        );
+        assert_eq!(fonts("display_fonts = []"), None);
+        assert_eq!(fonts("display_fonts = [\"Inter\", 3]"), None);
+        assert_eq!(fonts("display_fonts = 3"), None);
     }
 
     #[test]

@@ -11,6 +11,7 @@ use egui::{
 };
 use encore::lyrics::{LyricLine, Lyrics, LyricsState};
 
+use super::fonts::DisplayFont;
 use super::panel_theme::PanelTheme;
 use super::{font_bold, font_light, with_alpha};
 use crate::art;
@@ -268,6 +269,8 @@ pub struct LiveLook {
     pub skip_buttons: bool,
     pub lyrics_align: LyricsAlign,
     pub lyrics_flow: LyricsFlow,
+    /// The display font, which the clip's text is set in.
+    pub display_font: DisplayFont,
 }
 
 /// A drag on the range slider: what it holds, the range and the pointer's song position when
@@ -301,6 +304,7 @@ pub struct ExportPanel {
     skip_buttons: bool,
     lyrics_align: LyricsAlign,
     lyrics_flow: LyricsFlow,
+    display_font: DisplayFont,
     scroll_to: Option<usize>,
     /// Colours of the frame being drawn.
     theme: PanelTheme,
@@ -343,6 +347,7 @@ impl ExportPanel {
             skip_buttons: live.skip_buttons,
             lyrics_align: live.lyrics_align,
             lyrics_flow: live.lyrics_flow,
+            display_font: live.display_font,
             scroll_to: None,
             theme: PanelTheme::PLAIN,
         };
@@ -435,6 +440,7 @@ impl ExportPanel {
             skip_buttons: self.skip_buttons,
             lyrics_align: self.lyrics_align,
             lyrics_flow: self.lyrics_flow,
+            display_font: self.display_font.clone(),
             quality,
         }
     }
@@ -1544,6 +1550,8 @@ mod snapshot {
     /// `ENCORE_EXPORT_PANEL_SONG=<file>` loads the art of that MPD file, which the layout and
     /// the panel take their colours from; `ENCORE_EXPORT_PANEL_TINT=off` turns album colours
     /// off. `ENCORE_EXPORT_PANEL_SHORTCUTS=on` draws the shortcuts overlay instead of the panel.
+    /// `ENCORE_EXPORT_PANEL_DISPLAY_FONT` sets the layout in another display font, given as a
+    /// display font list entry.
     #[test]
     #[ignore = "needs a GPU"]
     fn panel_snapshot() {
@@ -1591,6 +1599,7 @@ mod snapshot {
                 skip_buttons: true,
                 lyrics_align: LyricsAlign::Right,
                 lyrics_flow: LyricsFlow::Stacked,
+                display_font: DisplayFont::default(),
             },
         );
         if panel.synced().is_some() {
@@ -1632,6 +1641,11 @@ mod snapshot {
 
         let (w, h) = (1920u32, 1080u32);
         let mut r = Renderer::new([w, h]).expect("renderer");
+        if let Ok(entry) = std::env::var("ENCORE_EXPORT_PANEL_DISPLAY_FONT") {
+            let spec = crate::ui::fonts::FontSpec::parse(&entry, None);
+            let font = crate::ui::fonts::resolve(&spec).expect("display font");
+            crate::ui::fonts::install(r.ctx(), &font);
+        }
         let art = art_song.map(|s| {
             let images = art::load_art_images(&crate::config::Config::from_env(), &s);
             art::upload(r.ctx(), &s.file, images)

@@ -2,6 +2,7 @@ pub mod backdrop;
 pub mod classic;
 pub mod encore_classic;
 pub mod export_panel;
+pub mod fonts;
 pub mod icons;
 pub mod lyrics_column;
 pub mod lyrics_panel;
@@ -17,9 +18,7 @@ pub mod widgets;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use egui::{
-    Color32, FontData, FontDefinitions, FontFamily, FontId, Galley, Painter, Pos2, Rect, Vec2,
-};
+use egui::{Color32, FontFamily, FontId, Galley, Painter, Pos2, Rect, Vec2};
 
 use encore::lyrics::LyricsState;
 
@@ -27,9 +26,6 @@ use crate::art::{ArtTextures, Thumb, ART_FADE};
 use crate::config::{LyricsAlign, LyricsFlow};
 use crate::player::PlayerState;
 use scheme::{Ink, Scheme};
-
-pub const FONT_LIGHT: &str = "figtree-regular";
-pub const FONT_BOLD: &str = "bold";
 
 /// Album art to draw, with the previous song's art kept for the cross-fade.
 #[derive(Clone, Copy, Default)]
@@ -156,48 +152,29 @@ impl View<'_> {
     }
 }
 
-/// Registers Figtree Regular as the default proportional font and Bold as the `"bold"` family.
+/// Installs the interface font and the bundled display font; see [`fonts`].
 pub fn install_fonts(ctx: &egui::Context) {
-    let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert(
-        FONT_LIGHT.to_owned(),
-        Arc::new(FontData::from_static(include_bytes!(
-            "../../assets/font/Figtree-Regular.ttf"
-        ))),
-    );
-    fonts.font_data.insert(
-        FONT_BOLD.to_owned(),
-        Arc::new(FontData::from_static(include_bytes!(
-            "../../assets/font/Figtree-Bold.ttf"
-        ))),
-    );
-    fonts
-        .families
-        .entry(FontFamily::Proportional)
-        .or_default()
-        .insert(0, FONT_LIGHT.to_owned());
-    // Keep egui's fallbacks behind the bold face for glyphs Figtree lacks.
-    let mut bold = vec![FONT_BOLD.to_owned()];
-    bold.extend(
-        fonts
-            .families
-            .get(&FontFamily::Proportional)
-            .into_iter()
-            .flatten()
-            .cloned(),
-    );
-    fonts
-        .families
-        .insert(FontFamily::Name(FONT_BOLD.into()), bold);
-    ctx.set_fonts(fonts);
+    fonts::install(ctx, &fonts::DisplayFont::bundled());
 }
 
+/// The interface font's regular face, for panels, overlays and notifications.
 pub fn font_light(size: f32) -> FontId {
     FontId::proportional(size)
 }
 
+/// The interface font's bold face.
 pub fn font_bold(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name(FONT_BOLD.into()))
+    FontId::new(size, FontFamily::Name(fonts::INTERFACE_BOLD.into()))
+}
+
+/// The display font's regular face, for the now playing display and exported clips.
+pub fn display_light(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(fonts::DISPLAY_REGULAR.into()))
+}
+
+/// The display font's bold face.
+pub fn display_bold(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(fonts::DISPLAY_BOLD.into()))
 }
 
 /// Formats a duration as `m:ss`.

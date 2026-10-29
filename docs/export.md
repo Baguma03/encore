@@ -20,7 +20,7 @@ The **Style** chips (**Classic**, **Vibrant** and **Encore Classic**) choose the
 - **Artist background**: the artist image as the background; it starts at the live setting of the chosen style's layout and is disabled, with a note, when the [artists folder](artist-backgrounds.md) has no image for the song's artist.
 - **Album colours**: [album colours](layouts.md#album-colours), taken from the artist image when it is the clip's background and from the cover otherwise, or the plain look when off.
 
-Encore Classic clips also follow the display's skip-button setting (`s`).
+Encore Classic clips also follow the display's skip-button setting (`s`), and every clip sets its text in the [display font](layouts.md#display-font) shown when the panel opened.
 
 ## Choosing the range
 The lines inside the clip are highlighted in the lyric list, and the range slider below it spans the whole song, with a tick at the start of every lyric line. All three controls stay in sync:

@@ -165,6 +165,12 @@ pub struct Config {
     pub lyrics_flow: LyricsFlow,
     /// Date and clock overlay shown at startup.
     pub clock: bool,
+    /// Display font at startup: `ENCORE_DISPLAY_FONT` or `display_font`, else the first of
+    /// `display_fonts`, else Figtree. A family name or a font file path.
+    pub display_font: String,
+    /// Display fonts `u` cycles through: `ENCORE_DISPLAY_FONTS` or `display_fonts`, always
+    /// holding `display_font`; Figtree and `display_font` when unset.
+    pub display_fonts: Vec<String>,
 }
 
 impl Config {
@@ -287,6 +293,11 @@ impl Config {
                 .join("encore"),
         };
 
+        let (display_font, display_fonts) = display_fonts(
+            get("ENCORE_DISPLAY_FONT"),
+            get("ENCORE_DISPLAY_FONTS").map(|v| split_list(&v)),
+        );
+
         Self {
             mpd_host,
             mpd_port,
@@ -306,7 +317,17 @@ impl Config {
             lyrics_align,
             lyrics_flow,
             clock: get("ENCORE_CLOCK").is_none_or(|v| !is_off(&v)),
+            display_font,
+            display_fonts,
         }
+    }
+
+    /// Position of the startup display font in [`Config::display_fonts`].
+    pub fn display_font_index(&self) -> usize {
+        self.display_fonts
+            .iter()
+            .position(|f| same_font(f, &self.display_font))
+            .unwrap_or(0)
     }
 
     /// Host argument for mpc, which takes the password in the same `password@host` form.
@@ -420,6 +441,54 @@ fn expand_tilde(path: &str, home: Option<&Path>) -> PathBuf {
     }
 }
 
+/// Bundled display font, the default.
+const DEFAULT_DISPLAY_FONT: &str = "Figtree";
+
+/// Whether two display font entries name the same font.
+fn same_font(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
+/// The startup display font and the list `u` cycles through, from the `display_font` and
+/// `display_fonts` settings. The startup font defaults to the list's first entry, else Figtree;
+/// the list defaults to Figtree and the startup font, and always holds the startup font, put
+/// first when a configured list lacks it. Repeated entries are dropped.
+fn display_fonts(font: Option<String>, list: Option<Vec<String>>) -> (String, Vec<String>) {
+    let list = list.filter(|l| !l.is_empty());
+    let font = font
+        .or_else(|| list.as_ref().and_then(|l| l.first().cloned()))
+        .unwrap_or_else(|| DEFAULT_DISPLAY_FONT.to_owned());
+    let fonts = match list {
+        Some(mut fonts) => {
+            if !fonts.iter().any(|f| same_font(f, &font)) {
+                fonts.insert(0, font.clone());
+            }
+            fonts
+        }
+        None => vec![DEFAULT_DISPLAY_FONT.to_owned(), font.clone()],
+    };
+    let mut unique: Vec<String> = Vec::with_capacity(fonts.len());
+    for f in fonts {
+        if !unique.iter().any(|u| same_font(u, &f)) {
+            unique.push(f);
+        }
+    }
+    (font, unique)
+}
+
+/// The entries of a list setting: one per line when the value has several lines, as the
+/// config file passes its lists, otherwise comma-separated, as typed in a variable. Entries
+/// are trimmed and empty ones dropped.
+pub fn split_list(value: &str) -> Vec<String> {
+    let sep = if value.contains('\n') { '\n' } else { ',' };
+    value
+        .split(sep)
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 fn is_off(value: &str) -> bool {
     matches!(value.to_lowercase().as_str(), "0" | "off" | "false" | "no")
 }
@@ -457,6 +526,80 @@ mod tests {
         assert_eq!(cfg.lyrics_align, LyricsAlign::Right);
         assert_eq!(cfg.lyrics_flow, LyricsFlow::Stacked);
         assert!(cfg.clock);
+    }
+
+    #[test]
+    fn display_font_settings() {
+        let fonts = |vars: &[(&str, &str)]| {
+            let cfg = parse(vars);
+            let index = cfg.display_font_index();
+            (cfg.display_font, cfg.display_fonts, index)
+        };
+        let list = |l: &[&str]| l.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(fonts(&[]), ("Figtree".into(), list(&["Figtree"]), 0));
+        assert_eq!(
+            fonts(&[("ENCORE_DISPLAY_FONT", " Inter ")]),
+            ("Inter".into(), list(&["Figtree", "Inter"]), 1)
+        );
+        assert_eq!(
+            fonts(&[("ENCORE_DISPLAY_FONT", "figtree")]),
+            ("figtree".into(), list(&["Figtree"]), 0)
+        );
+        // A comma-separated variable; the startup font defaults to its first entry.
+        assert_eq!(
+            fonts(&[(
+                "ENCORE_DISPLAY_FONTS",
+                "Inter, Poppins,,inter, ~/f/Lato-Regular.ttf"
+            )]),
+            (
+                "Inter".into(),
+                list(&["Inter", "Poppins", "~/f/Lato-Regular.ttf"]),
+                0
+            )
+        );
+        // The startup font joins the front of a list that lacks it.
+        assert_eq!(
+            fonts(&[
+                ("ENCORE_DISPLAY_FONT", "Lato"),
+                ("ENCORE_DISPLAY_FONTS", "Inter,Poppins")
+            ]),
+            ("Lato".into(), list(&["Lato", "Inter", "Poppins"]), 0)
+        );
+        assert_eq!(
+            fonts(&[
+                ("ENCORE_DISPLAY_FONT", "POPPINS"),
+                ("MPD_DISPLAY_DISPLAY_FONTS", "Inter,Poppins")
+            ]),
+            ("POPPINS".into(), list(&["Inter", "Poppins"]), 1)
+        );
+        // An empty list counts as unset.
+        assert_eq!(
+            fonts(&[("ENCORE_DISPLAY_FONTS", " , ")]),
+            ("Figtree".into(), list(&["Figtree"]), 0)
+        );
+    }
+
+    #[test]
+    fn display_fonts_from_the_config_file() {
+        let file_values = file::parse(
+            "display_font = \"Inter\"\ndisplay_fonts = [\"Figtree\", \"Inter\", \"/f/A,B.ttf\"]\n",
+        );
+        let cfg = Config::from_sources(layered(|_| None, &file_values), |_| None, None);
+        assert_eq!(cfg.display_font, "Inter");
+        assert_eq!(cfg.display_fonts, ["Figtree", "Inter", "/f/A,B.ttf"]);
+        assert_eq!(cfg.display_font_index(), 1);
+        // A variable replaces the file's list.
+        let env = |key: &str| (key == "ENCORE_DISPLAY_FONTS").then(|| "Poppins,Inter".to_owned());
+        let cfg = Config::from_sources(layered(env, &file_values), |_| None, None);
+        assert_eq!(cfg.display_fonts, ["Poppins", "Inter"]);
+        assert_eq!(cfg.display_font_index(), 1);
+    }
+
+    #[test]
+    fn list_splitting() {
+        assert_eq!(split_list("a, b ,,c"), ["a", "b", "c"]);
+        assert_eq!(split_list("a,b\nc"), ["a,b", "c"]);
+        assert!(split_list(" ").is_empty());
     }
 
     #[test]

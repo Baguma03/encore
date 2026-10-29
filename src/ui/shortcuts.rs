@@ -101,6 +101,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut(&[K(Key::B)], "Moving backdrop", Display),
     shortcut(&[K(Key::A)], "Artist background", Display),
     shortcut(&[K(Key::K)], "Album colours", Display),
+    shortcut(
+        &[K(Key::U), Shift(Key::U)],
+        "Display font / backwards",
+        Display,
+    ),
     shortcut(&[K(Key::S)], "Skip buttons (Encore Classic)", Display),
     shortcut(&[K(Key::C)], "Mouse cursor", Display),
     shortcut(&[K(Key::Y)], "Lyrics on / off", Lyrics),
@@ -179,8 +184,9 @@ const HEADING: f32 = 25.0;
 const HEADING_ABOVE: f32 = 16.0;
 const HEADING_BELOW: f32 = 4.0;
 const TEXT: f32 = 15.0;
-/// Figtree sits high in its line box; this lowers descriptions onto the key caps' centre.
-const TEXT_NUDGE: f32 = 1.5;
+/// Lowers descriptions onto the key caps' centre: centring the line box leaves Lexend Deca's
+/// glyphs slightly higher than the caps' monospace labels.
+const TEXT_NUDGE: f32 = 1.2;
 const ROW: f32 = 28.0;
 const CAP_TEXT: f32 = 13.0;
 const CAP: f32 = 21.0;

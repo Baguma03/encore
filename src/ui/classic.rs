@@ -15,7 +15,9 @@ use super::up_next::{self, UpNext};
 use super::widgets::{
     self, ease, icon_button, lerp, paint_icon_button, paint_seek_bar, seek_bar, Icon,
 };
-use super::{cover_rect, fit_text, fmt_time, font_bold, font_light, with_alpha, View, FULL_UV};
+use super::{
+    cover_rect, display_bold, display_light, fit_text, fmt_time, with_alpha, View, FULL_UV,
+};
 use crate::art::ArtTextures;
 use crate::player::{Command, PlayState, SongInfo};
 
@@ -88,11 +90,11 @@ impl Meta {
             (true, _) => song.album.clone(),
         };
         Self {
-            title: fit_text(painter, &song.title, font_bold, title, width, ink.text),
+            title: fit_text(painter, &song.title, display_bold, title, width, ink.text),
             subtitle: fit_text(
                 painter,
                 &sub,
-                font_light,
+                display_light,
                 subtitle,
                 width,
                 with_alpha(ink.soft, muted),
@@ -157,7 +159,7 @@ struct Controls {
 
 impl Controls {
     fn time_font(unit: f32) -> egui::FontId {
-        font_light(unit * 0.04)
+        display_light(unit * 0.04)
     }
 
     fn time_height(painter: &Painter, unit: f32) -> f32 {
@@ -226,7 +228,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
             screen.center(),
             Align2::CENTER_CENTER,
             text,
-            font_bold(unit / 22.0),
+            display_bold(unit / 22.0),
             with_alpha(Color32::WHITE, 0.8),
         );
         if clock_t > 0.0 {
@@ -721,14 +723,14 @@ pub fn paint_clock(painter: &Painter, screen: Rect, view: &View, alpha: f32, ink
         date_pos,
         Align2::CENTER_TOP,
         now.format("%a %-d %b").to_string(),
-        font_light(h * 0.028),
+        display_light(h * 0.028),
         with_alpha(ink.soft, 0.6 * alpha),
     );
     painter.text(
         Pos2::new(date_pos.x, date.bottom() - h * 0.005),
         Align2::CENTER_TOP,
         now.format("%H:%M").to_string(),
-        font_bold(h / 10.0),
+        display_bold(h / 10.0),
         with_alpha(ink.text, 0.85 * alpha),
     );
 }

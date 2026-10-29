@@ -20,7 +20,7 @@ use super::up_next::{self, UpNext};
 use super::vibrant;
 use super::wavy::{self, BarColors, Wavy};
 use super::widgets::{ease, lerp, paint_smeared_galley, seek_input, smooth_value};
-use super::{cover_rect, fit_text, font_bold, font_light, with_alpha, View, FULL_UV};
+use super::{cover_rect, display_bold, display_light, fit_text, with_alpha, View, FULL_UV};
 use crate::art::ArtTextures;
 use crate::config::{LyricsAlign, LyricsFlow};
 use crate::player::{Command, PlayState};
@@ -202,19 +202,26 @@ fn paint(
     let gap = w.min(h) * 0.03;
     let full = block.play.right() - block.title.x;
     let beside_button = block.play.left() - gap - block.title.x;
-    let fit = |text, size, width, color| fit_text(painter, text, font_bold, size, width, color);
-    let mut title_text = fit(title, block.title_size, full, scheme.text);
-    if block.title.y + title_text.size().y > block.play.top() - gap {
-        title_text = fit(title, block.title_size, beside_button, scheme.text);
-    }
-    let artist_pos = block.title + Vec2::new(0.0, title_text.size().y + art_rect.height() * 0.05);
-    painter.galley(block.title, title_text, scheme.text);
+    let fit = |text, size, width, color| fit_text(painter, text, display_bold, size, width, color);
     let artist_text = fit(
         artist,
         block.title_size / 2.0,
         beside_button,
         scheme.subtext,
     );
+    let artist_gap = art_rect.height() * 0.05;
+    // The title's top, raised when a font with tall lines would push the artist below the art.
+    let title_top = |title: &Galley| {
+        let height = title.size().y + artist_gap + artist_text.size().y;
+        block.title.y.min(art_rect.bottom() - height)
+    };
+    let mut title_text = fit(title, block.title_size, full, scheme.text);
+    if title_top(&title_text) + title_text.size().y > block.play.top() - gap {
+        title_text = fit(title, block.title_size, beside_button, scheme.text);
+    }
+    let title_pos = Pos2::new(block.title.x, title_top(&title_text));
+    let artist_pos = title_pos + Vec2::new(0.0, title_text.size().y + artist_gap);
+    painter.galley(title_pos, title_text, scheme.text);
     painter.galley(artist_pos, artist_text, scheme.subtext);
 
     let command = paint_controls(ui, painter, block, view, &scheme, id);
@@ -270,7 +277,7 @@ fn paint(
 fn paint_clock(painter: &Painter, art: Rect, unit: f32, view: &View, scheme: &Scheme, alpha: f32) {
     let time = painter.layout_no_wrap(
         view.now.format("%H:%M").to_string(),
-        font_bold(unit / 10.0),
+        display_bold(unit / 10.0),
         with_alpha(scheme.text, 0.85 * alpha),
     );
     let time_pos = Pos2::new(
@@ -281,7 +288,7 @@ fn paint_clock(painter: &Painter, art: Rect, unit: f32, view: &View, scheme: &Sc
         Pos2::new(art.center().x, time_pos.y + unit * 0.005),
         Align2::CENTER_BOTTOM,
         view.now.format("%a %-d %b").to_string(),
-        font_light(unit * 0.028),
+        display_light(unit * 0.028),
         with_alpha(scheme.subtext, 0.6 * alpha),
     );
     painter.galley(time_pos, time, scheme.text);
@@ -710,7 +717,7 @@ fn paint_classic(
         let galley = aligned(
             painter,
             text,
-            font_bold(base * scale),
+            display_bold(base * scale),
             rect.width() * scale,
             halign,
         );
@@ -769,7 +776,7 @@ fn paint_stacked(ui: &egui::Ui, painter: &Painter, rect: Rect, lines: &Lines, id
         let galley = aligned(
             painter,
             text,
-            font_bold(base * scale),
+            display_bold(base * scale),
             rect.width() * scale,
             halign,
         );
@@ -834,7 +841,7 @@ fn paint_scrolling(ui: &egui::Ui, painter: &Painter, rect: Rect, lines: &Lines, 
         let galley = aligned(
             painter,
             text,
-            font_bold(base * scale),
+            display_bold(base * scale),
             rect.width() * scale,
             halign,
         );

@@ -10,6 +10,7 @@ use crate::config::{Config, Layout, LyricsAlign, LyricsFlow, Source};
 use crate::export::{self, Aspect, ExportJob, ExportRequest, ExportStatus, Quality, Style};
 use crate::player::{Command, PlayState, Player, PlayerState, SongInfo};
 use crate::ui::export_panel::{ExportPanel, LiveLook, Marks, PanelResult};
+use crate::ui::fonts::{self, DisplayFont, DisplayFonts};
 use crate::ui::lyrics_panel::{self, LyricsPanel};
 use crate::ui::panel_theme::PanelTheme;
 use crate::ui::toasts::{Progress, Toast, Toasts};
@@ -22,6 +23,7 @@ const MARK_TOAST: Duration = Duration::from_secs(2);
 const SAVED_TOAST: Duration = Duration::from_secs(8);
 const FAILED_TOAST: Duration = Duration::from_secs(10);
 const CANCELLED_TOAST: Duration = Duration::from_secs(3);
+const FONT_TOAST: Duration = Duration::from_secs(3);
 /// How far ← and → seek within the song.
 const SEEK_STEP: Duration = Duration::from_secs(5);
 
@@ -43,6 +45,8 @@ enum Action {
     SkipButtons,
     LyricsAlign,
     LyricsFlow,
+    DisplayFont,
+    DisplayFontBack,
     SeekBack,
     SeekForward,
     Previous,
@@ -87,8 +91,9 @@ struct Open {
     typing: bool,
 }
 
-/// Maps a key press to its action. Shift matters only for `y`, `,` and `.`: Shift+Y opens the
-/// lyrics manager, `y` alone toggles the lyrics, and Shift+, and Shift+. (`<` and `>`) go to the
+/// Maps a key press to its action. Shift matters only for `y`, `u`, `,` and `.`: Shift+Y opens
+/// the lyrics manager, `y` alone toggles the lyrics, Shift+U steps back through the display
+/// fonts that `u` cycles forwards, and Shift+, and Shift+. (`<` and `>`) go to the
 /// previous and next track while `,` and `.` alone do nothing. While a text field has the keyboard no key acts, so
 /// typing never triggers a shortcut; Escape then only leaves the field. While the lyrics
 /// manager or the export panel is open only closing it and fullscreen work, so keys meant for
@@ -134,6 +139,8 @@ fn key_action(press: Press, open: Open) -> Option<Action> {
         Key::S => Action::SkipButtons,
         Key::J => Action::LyricsAlign,
         Key::O => Action::LyricsFlow,
+        Key::U if shift => Action::DisplayFontBack,
+        Key::U => Action::DisplayFont,
         Key::ArrowLeft => Action::SeekBack,
         Key::ArrowRight => Action::SeekForward,
         Key::Comma if shift => Action::Previous,
@@ -242,6 +249,10 @@ pub struct App {
     skip_buttons: bool,
     lyrics_align: LyricsAlign,
     lyrics_flow: LyricsFlow,
+    /// The display fonts `u` cycles through.
+    display_fonts: DisplayFonts,
+    /// The installed display font, which exports also use.
+    display_font: DisplayFont,
     export_panel: Option<ExportPanel>,
     /// Formats ticked in the export panel, kept for the session.
     export_formats: Vec<Aspect>,
@@ -259,7 +270,17 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, config: Config) -> Self {
-        ui::install_fonts(&cc.egui_ctx);
+        // The startup font is loaded before the first frame; the rest of the list is looked up
+        // in the background.
+        let ctx = cc.egui_ctx.clone();
+        let display_fonts = DisplayFonts::new(
+            &config.display_fonts,
+            config.display_font_index(),
+            dirs::home_dir().as_deref(),
+            move || ctx.request_repaint(),
+        );
+        let display_font = display_fonts.current();
+        fonts::install(&cc.egui_ctx, &display_font);
 
         let ctx = cc.egui_ctx.clone();
         let player = Player::spawn(&config, Box::new(move || ctx.request_repaint()));
@@ -292,6 +313,8 @@ impl App {
             skip_buttons: config.skip_buttons,
             lyrics_align: config.lyrics_align,
             lyrics_flow: config.lyrics_flow,
+            display_fonts,
+            display_font,
             show_clock: config.clock,
             config,
             player,
@@ -360,6 +383,10 @@ impl App {
             Action::SkipButtons => self.skip_buttons = !self.skip_buttons,
             Action::LyricsAlign => self.lyrics_align = self.lyrics_align.next(),
             Action::LyricsFlow => self.lyrics_flow = self.lyrics_flow.next(),
+            Action::DisplayFont | Action::DisplayFontBack => {
+                let change = self.display_fonts.step(action == Action::DisplayFont);
+                self.apply_font_change(ctx, change);
+            }
             Action::SeekBack | Action::SeekForward => {
                 if let Some(song) = &state.current {
                     let from = seek_position(state, self.pending_seek.as_ref());
@@ -414,6 +441,28 @@ impl App {
         }
     }
 
+    /// Installs a display font switched to and says what happened in a toast.
+    fn apply_font_change(&mut self, ctx: &egui::Context, change: fonts::Change) {
+        let toast = match change {
+            fonts::Change::Switched(font) => {
+                fonts::install(ctx, &font);
+                let toast = Toast::new(format!("Display font: {}", font.name()), FONT_TOAST);
+                self.display_font = font;
+                toast
+            }
+            fonts::Change::Loading(name) => {
+                Toast::new(format!("Display font: {name}"), FONT_TOAST).detail("Loading…")
+            }
+            fonts::Change::OnlyOne(name) => Toast::new(format!("Display font: {name}"), FONT_TOAST)
+                .detail("The only display font; list more under display_fonts in the config"),
+            fonts::Change::Failed(name) => {
+                Toast::new(format!("Display font: {name} not found"), FONT_TOAST)
+                    .detail(format!("Staying with {}", self.display_font.name()))
+            }
+        };
+        self.toasts.replace("Display font", toast);
+    }
+
     /// Takes the album colours from the artist image while the current layout uses it as the
     /// background, cross-fading from the colours shown so far when that changes.
     fn follow_colour_source(&mut self) {
@@ -455,6 +504,7 @@ impl App {
                 skip_buttons: self.skip_buttons,
                 lyrics_align: self.lyrics_align,
                 lyrics_flow: self.lyrics_flow,
+                display_font: self.display_font.clone(),
             },
         ));
     }
@@ -676,6 +726,7 @@ impl App {
             ui.label(format!("Fullscreen: {}", self.fullscreen));
             ui.label(format!("Frame rate: {fps:.0} fps"));
             ui.label(format!("Layout: {:?}", self.layout));
+            ui.label(format!("Display font: {}", self.display_font.name()));
             let found = match lyrics {
                 _ if !self.lyrics_enabled => "off".to_owned(),
                 LyricsState::Loading => "searching".to_owned(),
@@ -749,6 +800,9 @@ impl eframe::App for App {
         }
         let state = self.player.state();
         self.track_marks(&state);
+        if let Some(change) = self.display_fonts.poll() {
+            self.apply_font_change(&ctx, change);
+        }
         self.handle_keys(&ctx, &state);
         if let Some(song) = &state.current {
             self.art.request(song);
@@ -847,6 +901,7 @@ mod tests {
             Key::S,
             Key::J,
             Key::O,
+            Key::U,
             Key::D,
             Key::C,
             Key::F,
@@ -940,6 +995,32 @@ mod tests {
         assert_eq!(act(Key::O, NONE), Some(Action::LyricsFlow));
         assert_eq!(act(Key::O, EXPORT), None);
         assert_eq!(act(Key::Z, NONE), None);
+    }
+
+    #[test]
+    fn u_cycles_the_display_font() {
+        let shift_u = Press::shift(Key::U);
+        assert_eq!(act(Key::U, NONE), Some(Action::DisplayFont));
+        assert_eq!(key_action(shift_u, NONE), Some(Action::DisplayFontBack));
+        // It works over the shortcuts overlay, like the other display keys.
+        assert_eq!(act(Key::U, SHORTCUTS), Some(Action::DisplayFont));
+        assert_eq!(
+            key_action(shift_u, SHORTCUTS),
+            Some(Action::DisplayFontBack)
+        );
+        // The panels keep it from the layout, and typing never triggers it.
+        let typing = Open {
+            typing: true,
+            ..LYRICS
+        };
+        let syncing = Open {
+            syncing: true,
+            ..LYRICS
+        };
+        for open in [EXPORT, LYRICS, typing, syncing] {
+            assert_eq!(act(Key::U, open), None, "{open:?}");
+            assert_eq!(key_action(shift_u, open), None, "{open:?}");
+        }
     }
 
     #[test]

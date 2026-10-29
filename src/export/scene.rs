@@ -7,6 +7,7 @@ use super::{ExportRequest, FrameInputs};
 use crate::art::{self, ArtImages, ArtTextures, Thumb};
 use crate::config::{Config, LyricsAlign, LyricsFlow};
 use crate::player::{PlayState, PlayerState, SongInfo};
+use crate::ui::fonts::{self, DisplayFont};
 use crate::ui::{classic, encore_classic, vibrant, ArtView, View};
 
 /// Draws export frames. Lives on the export thread.
@@ -25,7 +26,8 @@ pub fn default_scene(cfg: &Config, req: &ExportRequest) -> Box<dyn Scene> {
     Box::new(LayoutScene::new(cfg.clone(), req))
 }
 
-/// The layout of a [`Style`] without clock, hover effects or interaction. Art is loaded on
+/// The layout of a [`Style`] in the request's display font, without clock, hover effects or
+/// interaction. Art is loaded on
 /// the export thread on first use and uploaded into each format's context.
 pub struct LayoutScene {
     cfg: Config,
@@ -38,6 +40,7 @@ pub struct LayoutScene {
     skip_buttons: bool,
     lyrics_align: LyricsAlign,
     lyrics_flow: LyricsFlow,
+    display_font: DisplayFont,
     images: Option<ArtImages>,
     art: Option<ArtTextures>,
     next_image: Option<ColorImage>,
@@ -58,6 +61,7 @@ impl LayoutScene {
             skip_buttons: req.skip_buttons,
             lyrics_align: req.lyrics_align,
             lyrics_flow: req.lyrics_flow,
+            display_font: req.display_font.clone(),
             images: None,
             art: None,
             next_image: None,
@@ -68,6 +72,8 @@ impl LayoutScene {
 
 impl Scene for LayoutScene {
     fn prepare(&mut self, ctx: &egui::Context) {
+        // The text is set in the display font the request was made with, as on screen.
+        fonts::install(ctx, &self.display_font);
         let images = self
             .images
             .get_or_insert_with(|| art::load_art_images(&self.cfg, &self.song));

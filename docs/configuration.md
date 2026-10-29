@@ -16,6 +16,8 @@ tint = true
 skip_buttons = true
 clock = true                # date and clock overlay at startup
 export_dir = "~/Videos/encore"
+display_font = "Figtree"    # bundled Figtree, an installed family or a font file
+display_fonts = ["Figtree", "Inter", "~/.local/share/fonts/Poppins-Regular.ttf"] # cycled with u
 source = "auto"             # auto | mpd | mpris
 mpris_player = "spotify"    # substring of the player's bus name; unset: any player
 
@@ -49,3 +51,19 @@ Environment variables override the [configuration file](#configuration-file). Th
 | `ENCORE_SOURCE` | `auto`, `mpd` or `mpris` (case-insensitive): [where playback is read from](players.md#source). Defaults to `auto`. |
 | `ENCORE_MPRIS_PLAYER` | Case-insensitive part of an MPRIS player's name (for example `spotify`, `firefox`, `vlc` or `mpv`) to follow. Defaults to any player. |
 | `ENCORE_CLOCK` | `on` or `off`: the date and clock overlay at startup (`t` toggles it). Defaults to `on`. |
+| `ENCORE_DISPLAY_FONT` | The [display font](#display-fonts) at startup. Defaults to the first entry of `ENCORE_DISPLAY_FONTS`, else `Figtree`. |
+| `ENCORE_DISPLAY_FONTS` | Comma-separated [display fonts](#display-fonts) that `u` and `Shift`+`u` cycle through, for example `Figtree,Inter,~/fonts/Poppins-Regular.ttf`. Defaults to `Figtree` and the startup font. |
+
+## Display fonts
+The [display font](layouts.md#display-font) sets the now playing display and exported clips; panels, overlays and notifications always use the bundled Lexend Deca. `display_font` picks the font at startup and `display_fonts` lists the fonts `u` cycles through (`Shift`+`u` goes backwards). Each entry is one of:
+
+- `Figtree`: the bundled font, the default.
+- The family name of an installed font, such as `Inter` or `DejaVu Sans`, found with fontconfig's `fc-match` (from the `fontconfig` package, present on most desktops). Its regular and bold styles are used; a family without a bold style uses its regular one for both, and a variable font is set at weights 400 and 700. A name fontconfig does not know is skipped with a warning in the log, rather than replaced by a look-alike, and without `fc-match` only `Figtree` and font files work.
+- The path to a `.ttf` or `.otf` file (also `.ttc` and `.otc` collections, which use their first font), with `~` for the home directory. A file whose name contains `Regular` takes its bold face from the file beside it with `Bold` in its place, such as `Poppins-Bold.ttf` next to `Poppins-Regular.ttf`; otherwise the one file serves for both.
+
+```toml
+display_font = "Inter"
+display_fonts = ["Figtree", "Inter", "~/.local/share/fonts/Poppins-Regular.ttf"]
+```
+
+When `display_fonts` is unset, the list holds `Figtree` and `display_font`; a list without `display_font` gets it added at the front. In `ENCORE_DISPLAY_FONTS` the entries are separated by commas, so a file whose path contains a comma can only be listed in the configuration file. Entries that cannot be used are skipped, and an unusable startup font falls back to Figtree. The startup font loads before the window first draws; the other entries are looked up in the background, and switching to one still loading waits for it. The font chosen with `u` lasts until Encore closes.

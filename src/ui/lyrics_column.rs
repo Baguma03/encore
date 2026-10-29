@@ -9,7 +9,7 @@ use super::scheme::Ink;
 use super::widgets::{
     ease, edge_fade, lerp, paint_blurred_galley, paint_text_shadow, smooth_value,
 };
-use super::{font_bold, font_light, with_alpha, View};
+use super::{display_bold, display_light, with_alpha, View};
 
 /// Seconds for a lyric line to grow into or out of the active style.
 pub const LINE_EMPHASIS: f32 = 0.35;
@@ -113,7 +113,7 @@ pub fn paint(ui: &egui::Ui, id: Id, column: &LyricsColumn, view: &View) {
                 Pos2::new(rect.left(), anchor),
                 Align2::LEFT_TOP,
                 "Searching lyrics…",
-                font_light(base * 0.6),
+                display_light(base * 0.6),
                 color,
             );
             return;
@@ -143,7 +143,7 @@ pub fn paint(ui: &egui::Ui, id: Id, column: &LyricsColumn, view: &View) {
                 };
                 let galley = painter.layout(
                     text,
-                    font_bold(base * scale),
+                    display_bold(base * scale),
                     Color32::WHITE,
                     rect.width() * scale,
                 );
@@ -152,7 +152,7 @@ pub fn paint(ui: &egui::Ui, id: Id, column: &LyricsColumn, view: &View) {
                 laid_out.push((galley, emphasis));
             }
 
-            let intro = painter.layout_no_wrap("• • •".into(), font_bold(base), Color32::WHITE);
+            let intro = painter.layout_no_wrap("• • •".into(), display_bold(base), Color32::WHITE);
             let intro_h = intro.size().y + gap;
             let offset = smooth_value(
                 ctx,
@@ -192,7 +192,7 @@ pub fn paint(ui: &egui::Ui, id: Id, column: &LyricsColumn, view: &View) {
         }
         Lyrics::Plain(lines) => {
             let gap = base * 0.5;
-            let font = font_bold(base * 0.8);
+            let font = display_bold(base * 0.8);
             let galleys: Vec<_> = lines
                 .iter()
                 .map(|l| {

@@ -11,7 +11,7 @@ use egui::{Color32, FontId, Galley, Id, Painter, Pos2, Rect, Vec2};
 use super::classic::square_uv;
 use super::scheme::Ink;
 use super::widgets::{ease, lerp, paint_text_shadow};
-use super::{font_bold, with_alpha, View};
+use super::{display_bold, with_alpha, View};
 use crate::player::SongInfo;
 
 /// Song progress from which the card shows.
@@ -184,8 +184,8 @@ impl UpNext {
 
         let text_x = thumb_rect.right() + pad * 0.8;
         let text_w = left + width - text_x;
-        let title = one_row(&painter, &song.title, font_bold(unit * 0.028), text_w);
-        let artist = one_row(&painter, &song.artist, font_bold(unit * 0.021), text_w);
+        let title = one_row(&painter, &song.title, display_bold(unit * 0.028), text_w);
+        let artist = one_row(&painter, &song.artist, display_bold(unit * 0.021), text_w);
         let gap = unit * 0.005;
         let text_h = title.size().y + gap + artist.size().y;
         let text_top = thumb_rect.center().y - text_h / 2.0;

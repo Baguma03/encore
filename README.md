@@ -11,6 +11,7 @@ Encore is a fullscreen now-playing display for Linux. It follows [MPD](https://w
 ## Features
 - Three [layouts](docs/layouts.md): Encore Classic, Classic and Vibrant, with a moving album-art backdrop and an "Up next" card
 - [Album colours](docs/layouts.md#album-colours) for text, icons and bars, drawn from the cover, or from the artist image when it is the background
+- A switchable [display font](docs/layouts.md#display-font) for titles, lyrics and the clock: the bundled Figtree, any installed font or a font file
 - Time-synced [lyrics](docs/lyrics.md) from local files, a cache, LRCLIB or KuGou
 - A [lyrics manager](docs/lyrics.md#lyrics-manager) for searching, importing, editing and re-timing lyrics, with a tap-to-sync view
 - [Lyric clip export](docs/export.md) as share-ready MP4s in 16:9, 9:16 and 1:1
@@ -88,6 +89,7 @@ Encore starts fullscreen. `Esc` or `q` quits, `f` toggles fullscreen and `?` sho
 | `b`                                   | Toggle the moving backdrop                                                                             |
 | `a`                                   | Toggle the artist background for the current layout                                                    |
 | `k`                                   | Toggle album colours                                                                                   |
+| `u` / `Shift`+`u`                     | Cycle the [display font](docs/layouts.md#display-font) forwards / backwards through `display_fonts`    |
 | `s`                                   | Toggle the previous/next buttons beside the Encore Classic layout's progress bar                       |
 | `j`                                   | Cycle the Encore Classic layout's lyric alignment (left → centre → right → right column, left-aligned) |
 | `o`                                   | Cycle the Encore Classic layout's lyric flow (classic → stacked → scrolling)                           |
@@ -111,9 +113,9 @@ Encore starts fullscreen. `Esc` or `q` quits, `f` toggles fullscreen and `?` sho
 Issues and pull requests are welcome.
 
 ## Licence
-MIT — see [LICENSE](LICENSE). The bundled [Figtree](https://github.com/erikdkennedy/figtree) font is licensed under the SIL Open Font License 1.1 — see [assets/font/OFL.txt](assets/font/OFL.txt).
+MIT — see [LICENSE](LICENSE). The bundled [Figtree](https://github.com/erikdkennedy/figtree) and [Lexend Deca](https://github.com/googlefonts/lexend) fonts are licensed under the SIL Open Font License 1.1 — see [assets/font/OFL-Figtree.txt](assets/font/OFL-Figtree.txt) and [assets/font/OFL-LexendDeca.txt](assets/font/OFL-LexendDeca.txt).
 
 ## Credits
 Encore began as a fork of mpd-display-rs by Allison Linhart, original repository has since been taken down.
 
-Built with [eframe/egui](https://crates.io/crates/eframe), the [mpd](https://crates.io/crates/mpd) crate and [zbus](https://crates.io/crates/zbus). Online lyrics come from [LRCLIB](https://lrclib.net) and KuGou, and artist images from [TheAudioDB](https://www.theaudiodb.com) and [Deezer](https://www.deezer.com). Text is set in [Figtree](https://github.com/erikdkennedy/figtree) by Erik Kennedy.
+Built with [eframe/egui](https://crates.io/crates/eframe), the [mpd](https://crates.io/crates/mpd) crate and [zbus](https://crates.io/crates/zbus). Online lyrics come from [LRCLIB](https://lrclib.net) and KuGou, and artist images from [TheAudioDB](https://www.theaudiodb.com) and [Deezer](https://www.deezer.com). The now playing display is set in [Figtree](https://github.com/erikdkennedy/figtree) by Erik Kennedy ([licence](assets/font/OFL-Figtree.txt)) unless another display font is chosen, and the interface in [Lexend Deca](https://github.com/googlefonts/lexend) by the Lexend Project ([licence](assets/font/OFL-LexendDeca.txt)), both under the SIL Open Font License 1.1.

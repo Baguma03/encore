@@ -13,7 +13,7 @@ use super::lyrics_column::{self, LyricsColumn};
 use super::scheme::Ink;
 use super::up_next::{self, UpNext};
 use super::widgets::{ease, lerp};
-use super::{font_bold, font_light, with_alpha, View};
+use super::{display_bold, display_light, with_alpha, View};
 use crate::art;
 use crate::player::{Command, SongInfo};
 
@@ -127,7 +127,7 @@ impl Info {
     }
 
     fn time_font(&self) -> FontId {
-        font_light(self.unit * 0.034)
+        display_light(self.unit * 0.034)
     }
 
     fn time_height(&self, painter: &Painter) -> f32 {
@@ -212,7 +212,7 @@ pub fn draw(ui: &mut egui::Ui, view: &View) -> Option<Command> {
             screen.center(),
             Align2::CENTER_CENTER,
             text,
-            font_bold(unit / 22.0),
+            display_bold(unit / 22.0),
             with_alpha(Color32::WHITE, 0.85),
         );
         return background_click();
